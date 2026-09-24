@@ -32,7 +32,34 @@ int main() {
 
         if (arg[0] == NULL) {
             free_arg(arg);
+            continue;
+        }
+
+        if (strcmp(arg[0], "exit") == 0) {
+            free_arg(arg);
             break;
+        }
+
+        // cd
+        if (strcmp(arg[0], "cd") == 0) {
+            char *target_dir = arg[1];
+
+            if (target_dir == NULL) {
+                target_dir = getenv("HOME");
+
+                if (target_dir == NULL) {
+                    fprintf(stderr, "mysh: cd: HOME not set\n");
+                    free_arg(arg);
+                    continue;
+                }
+            }
+
+            if (chdir(target_dir) != 0) {
+                perror("mysh: cd");
+            }
+
+            free_arg(arg);
+            continue;
         }
 
         pid_t pid = fork();
