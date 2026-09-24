@@ -9,7 +9,7 @@ all: myshell
 myshell: $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o myshell
 
-debug: CFLAGS += -g -fsanitize=address,undefined src/main.c -o myshell
+debug: CFLAGS += -g -fsanitize=address,undefined
 debug: clean myshell
 
 clean:
