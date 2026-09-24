@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include "lexer.h"
 
 int main() {
     printf("myshell: shell started\n");
@@ -11,7 +13,7 @@ int main() {
     while (1) {
         write(STDOUT_FILENO, "mysh$ ", 6);
 
-        if (fgets( line, sizeof(line), stdin) == NULL) { // записывает в line ввод с клавиатуры размером не более line(1023)
+        if (fgets( line, sizeof(line), stdin) == NULL) { // записывает в line ввод с клавиатуры(stdin) размером не более line(1023)
             write(STDOUT_FILENO, "\n", 1);
             break;
         }
@@ -26,7 +28,26 @@ int main() {
             continue;
         }
 
-        printf("Read: [%s]\n", line);
+        char **arg = split_line(line);
+
+        if (arg[0] == NULL) {
+            free_arg(arg);
+            break;
+        }
+
+        pid_t pid = fork();
+
+        if (pid == -1) {
+            perror("fork");
+        } else if (pid == 0) {
+            execvp(arg[0], arg);
+            perror("mysh");
+            _exit(127); // команда не найдена
+        } else {
+            int status;
+            wait(&status);
+        }
+        free_arg(arg);
     }
     
     return 0;

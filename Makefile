@@ -1,13 +1,18 @@
 CC = gcc
 CFLAGS = -std=c23 -Wall -Wextra -D_POSIX_C_SOURCE=200809L
 
+SRCS = src/main.c src/lexer.c
+OBJS = $(SRCS:.c=.o)
+
 all: myshell
 
-myshell: src/main.c
-	$(CC) $(CFLAGS) src/main.c -o myshell
+myshell: $(OBJS)
+	$(CC) $(CFLAGS) $(OBJS) -o myshell
 
-debug:
-	$(CC) $(CFLAGS) -g -fsanitize=address,undefined src/main.c -o myshell
+debug: CFLAGS += -g -fsanitize=address,undefined src/main.c -o myshell
+debug: clean myshell
 
 clean:
-	rm -f myshell *.o src/*.o
+	rm -f myshell $(OBJS)
+
+.PHONY: all debug clean
