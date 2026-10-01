@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include "lexer.h"
 
@@ -67,15 +68,85 @@ int main() {
         if (pid == -1) {
             perror("fork");
         } else if (pid == 0) {
-            execvp(arg[0], arg);
-            perror("mysh");
-            _exit(127); // команда не найдена
+            char *cmd_args[1024]; // массив аргументов для execvp
+            int cmd_arg = 0; // счетчик аргументов
+
+            for (int i = 0; arg[i] != NULL; i++) {
+            // обработка перенаправления (ввод/вывод)
+                // обработка символа >
+                if (strcmp(arg[i], ">") == 0) {
+                    i++;
+                    // проверка на наличие имени после символа >
+                    if (arg[i] == NULL) {
+                        fprintf(stderr, "mysh: missing file name for redirection\n");
+                        _exit(1);
+                    }
+
+                    int fd = open(arg[i], O_WRONLY | O_CREAT | O_TRUNC, 0666); // переписываем файл если он существует или создает новый
+                    if (fd == -1) {
+                        perror("mysh: open");
+                        _exit(1);
+                    }
+                    // перенаправление вывода в файл
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd); 
+                
+                // обработка символа >>
+                } else if (strcmp(arg[i], ">>") == 0) {
+                    i++;
+
+                    if (arg[i] == NULL) {
+                        fprintf(stderr, "mysh: missing file name for redirection\n");
+                        _exit(1);
+                    }
+
+                    int fd = open(arg[i], O_WRONLY | O_CREAT | O_APPEND, 0666); // записываем в конец файла если он существует или создает новый
+                    if (fd == -1) {
+                        perror("mysh: open");
+                        _exit(1);
+                    }
+
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+
+                // обработка символа <
+                } else if (strcmp(arg[i], "<") == 0) {
+                    i++;
+
+                    if (arg[i] == NULL) {
+                        fprintf(stderr, "mysh: missing file name for redirection\n");
+                        _exit(1);
+                    }
+
+                    int fd = open(arg[i], O_RDONLY); // открываем файл только для чтения
+                    if (fd == -1) {
+                        perror("mysh: open");
+                        _exit(1);
+                    }
+                    // перенаправление ввода из файла
+                    dup2(fd, STDIN_FILENO);
+                    close(fd);
+                } else {
+                    cmd_args[cmd_arg++] = arg[i]; // если не символ перенаправления то добавляем в массив аргументов
+                }
+            }
+
+            cmd_args[cmd_arg] = NULL; // ставим NULL в конец массива аргументов
+
+            if (cmd_arg > 0) {
+                execvp(cmd_args[0], cmd_args);
+                perror("mysh");
+                _exit(127);
+            }
+            _exit(0);
+
         } else {
             int status;
             wait(&status);
         }
-        free_arg(arg);
+
+        free_arg(arg);  
     }
-    
+
     return 0;
 }
