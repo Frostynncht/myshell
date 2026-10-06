@@ -16,6 +16,7 @@ char **split_line(char *line) {
 
     char *ptr = line;
 
+    // разбиваем строку на аргументы
     while (*ptr != '\0') {
         // пропуск пробелов и табуляции
         while(*ptr == ' ' || *ptr == '\t') {
@@ -68,7 +69,7 @@ char **split_line(char *line) {
 
         // оператор <
         if (*ptr == '<') {
-            tokens[position++] = strdup("<");     
+            tokens[position++] = strdup("<");  
             ptr += 1;
             continue;
         }

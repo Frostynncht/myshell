@@ -1,10 +1,10 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
 #include "lexer.h"
 #include "runner.h"
+#include "commands.h"
 
 int main() {
     printf("myshell: shell started\n");
@@ -46,41 +46,20 @@ int main() {
 
         // cd
         if (strcmp(arg[0], "cd") == 0) {
-            char *target_dir = arg[1];
-            
-            // если аргумент не указан, то переходим в домашнюю директорию
-            if (target_dir == NULL) {
-                target_dir = getenv("HOME");
-
-                if (target_dir == NULL) {
-                    fprintf(stderr, "mysh: cd: HOME not set\n");
-                    free_arg(arg);
-                    continue;
-                }
-            }
-
-            if (chdir(target_dir) != 0) {
-                perror("mysh: cd");
-            }
-
+            run_cd(arg);
             free_arg(arg);
             continue;
         }
 
         // pwd
         if (strcmp(arg[0], "pwd") == 0) {
-            char pwd[1024];
-        
-            if (getcwd(pwd, sizeof(pwd)) != NULL) {
-                printf("%s\n", pwd);
-            } else {
-                perror("mysh: pwd");
-            }
+            run_pwd();
+
             free_arg(arg);
             continue;
         }
 
-        // исполняем команду
+        // исполняет остальные команды
         runner(arg);
 
         free_arg(arg);

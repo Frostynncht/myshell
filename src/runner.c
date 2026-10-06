@@ -6,12 +6,14 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include "runner.h"
+#include "commands.h"
 
 // чтобы не дублировать код в случае пайпа
 static void run_simple_command(char **cmd) {
     char *cmd_args[128]; // массив аргументов для execvp
     int cmd_arg = 0; // счетчик аргументов
 
+    // обработка перенаправления ввода/вывода
     for (int i = 0; cmd[i] != NULL; i++) {
         // обработка >
         if (strcmp(cmd[i], ">") == 0) {
@@ -79,8 +81,13 @@ static void run_simple_command(char **cmd) {
     // NULL в конец массива для execvp
     cmd_args[cmd_arg] = NULL;
 
+    signal(SIGINT, SIG_DFL); // возвращаем обработку Ctrl+C в дочернем процессе
     if (cmd_arg > 0) {
-        signal(SIGINT, SIG_DFL); // возвращаем обработку Ctrl+C в дочернем процессе
+        if (strcmp(cmd_args[0], "echo") == 0) {
+            int result = run_echo(cmd_args);
+            _exit(result);
+        }
+
         execvp(cmd_args[0], cmd_args);
         perror("mysh");
         _exit(127);
@@ -93,6 +100,11 @@ int runner(char **args) {
         return 0;
     }
 
+    if (fflush(stdout) == EOF) {
+        perror("mysh: runner");
+        return 1;
+    }
+
     int pipe_pos = -1;
     // проверка на наличие |
     for (int i = 0; args[i] != NULL; i++) {
@@ -103,8 +115,9 @@ int runner(char **args) {
         }
     }
 
-    if (pipe_pos != -1) {
-        // разбиваем массив на две части(если есть символ |)
+    if (pipe_pos != -1) {       
+        // если есть |, делим строку на до и после | и запускаем пайп
+        char *pipe_token = args[pipe_pos];
         args[pipe_pos] = NULL;
         char **cmd1 = args; // слева от |
         char **cmd2 = &args[pipe_pos + 1];// справа от |
@@ -113,6 +126,7 @@ int runner(char **args) {
         int pipefd[2];
         if (pipe(pipefd) < 0) {
             perror("mysh: pipe");
+            args[pipe_pos] = pipe_token;
             return 1;
         }
 
@@ -122,6 +136,7 @@ int runner(char **args) {
             perror("mysh: fork");
             close(pipefd[0]);
             close(pipefd[1]);
+            args[pipe_pos] = pipe_token;
             return 1;
 
         } else if (pid1 == 0) {
@@ -137,6 +152,7 @@ int runner(char **args) {
             perror("mysh: fork");
             close(pipefd[0]);
             close(pipefd[1]);
+            args[pipe_pos] = pipe_token;
             return 1;
 
         } else if (pid2 == 0) {
@@ -152,6 +168,8 @@ int runner(char **args) {
         int status;
         waitpid(pid1, NULL, 0); // NULL, так как нам не нужен статус первого процесса
         waitpid(pid2, &status, 0); // ждем завершения второго процесса и получаем его статус
+
+        args[pipe_pos] = pipe_token; // восстанавливаем символ | в массиве аргументов
 
         // возвращаем код завершения второго процесса
         if (WIFEXITED(status)) {
