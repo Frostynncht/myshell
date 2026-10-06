@@ -44,6 +44,13 @@ char **split_line(char *line) {
             }
             tokens = new_tokens;
         }
+        
+        // обработка |
+        if (*ptr == '|') {
+            tokens[position++] = strdup("|");
+            ptr += 1;
+            continue;
+        }
 
         // оператор >>
         if (*ptr == '>' && *(ptr + 1) == '>') {
@@ -68,7 +75,7 @@ char **split_line(char *line) {
 
         char *start = ptr;
         // идем до конца слова
-        while(*ptr != '\0' && *ptr != ' ' && *ptr != '\t' && *ptr != '<' && *ptr != '>' && *ptr != '#') {
+        while(*ptr != '\0' && *ptr != ' ' && *ptr != '\t' && *ptr != '<' && *ptr != '>' && *ptr != '#' && *ptr != '|') {
             ptr++;
         }
 
