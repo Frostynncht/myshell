@@ -1,38 +1,40 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <signal.h>
 #include "lexer.h"
 #include "runner.h"
 #include "commands.h"
+#include "input.h"
 
 int main() {
-    printf("myshell: shell started\n");
-
     // игнорируем Ctrl+C в родительском процессе
     signal(SIGINT, SIG_IGN);
 
-    char line[1024];
-
     while (1) {
-        write(STDOUT_FILENO, "mysh$ ", 6);
+        // если не удалось вывести приглашение - завершаем
+        if (print_prompt() == 0) {
+            break;
+        }
+        
+        char *line = read_line();
 
-        if (fgets(line, sizeof(line), stdin) == NULL) { // записывает в line ввод с клавиатуры(stdin) размером не более line(1023)
-            write(STDOUT_FILENO, "\n", 1);
+        // после Ctrl+D в терминале переходим на новую строку
+        if (line == NULL) {
+            if (isatty(STDIN_FILENO) == 1) {
+                write(STDOUT_FILENO, "\n", 1);
+            }
             break;
         }
 
-        int len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') {
-            line[len - 1] = '\0';
-            len--;
-        }
-
-        if (len == 0) {
+        if (line[0] == '\0') {
+            free(line);
             continue;
         }
 
         char **arg = split_line(line);
+        free(line); // больше не нужна(лексер делает копии)
 
         if (arg[0] == NULL) {
             free_arg(arg);

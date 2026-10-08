@@ -2,19 +2,51 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 #include "commands.h"
 
 int run_pwd(void) {
-    char pwd[1024];
+    char *dir = get_curr_dir();
 
-    // получаем текущую рабочую директорию
-    if (getcwd(pwd, sizeof(pwd)) == NULL) {
-        perror("mysh: pwd");
+    if (dir == NULL) {
         return 1;
     }
 
-    printf("%s\n", pwd);
+    printf("%s\n", dir);
+    free(dir);
     return 0;
+}
+
+char *get_curr_dir(void) {
+    size_t capacity = 64;
+    char *dir = malloc(capacity);
+
+    if (dir == NULL) {
+        perror("mysh: malloc");
+        return NULL;
+    }
+
+    while (getcwd(dir, capacity) == NULL) {
+        // если ошибка не из-за маленького буфера
+        if (errno != ERANGE) {
+            perror("mysh: getcwd");
+            free(dir); 
+            return NULL;
+        }
+
+        capacity *= 2;
+        char *new_dir = realloc(dir, capacity);
+
+        if (new_dir == NULL) {
+            perror("mysh: realloc");
+            free(dir);
+            return NULL;
+        }
+
+        dir = new_dir;
+    }
+
+    return dir;
 }
 
 int run_cd(char **arg) {
