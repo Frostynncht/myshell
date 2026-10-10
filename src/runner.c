@@ -9,19 +9,20 @@
 #include "commands.h"
 
 // чтобы не дублировать код в случае пайпа
-static void run_simple_command(char **cmd) {
+static void run_simple_command(char **cmd, const Token *cmd_tokens) {
     char *cmd_args[128]; // массив аргументов для execvp
     int cmd_arg = 0; // счетчик аргументов
 
     // обработка перенаправления ввода/вывода
     for (int i = 0; cmd[i] != NULL; i++) {
         // обработка >
-        if (strcmp(cmd[i], ">") == 0) {
+        if (cmd_tokens[i].type == TOKEN_OUTPUT) {
             // пропуск >
             i++;
+
             // проверка на наличие имени после символа >
-            if (cmd[i] == NULL) {
-                write(STDERR_FILENO, "mysh: missing file name or redirection\n", 40);
+            if (cmd[i] == NULL || cmd_tokens[i].type != TOKEN_WORD) {
+                fprintf(stderr, "mysh: expected file name after >\n");
                 _exit(1);
             }
 
@@ -37,10 +38,10 @@ static void run_simple_command(char **cmd) {
             close(fd);
 
         // обработка >>
-        }else if (strcmp(cmd[i], ">>") == 0) {
+        } else if (cmd_tokens[i].type == TOKEN_APPEND) {
             i++;
-            if (cmd[i] == NULL) {
-                write(STDERR_FILENO, "mysh: missing file name or redirection\n", 40);
+            if (cmd[i] == NULL || cmd_tokens[i].type != TOKEN_WORD) {
+                fprintf(stderr, "mysh: expected file name after >>\n");
                 _exit(1);
             }
 
@@ -55,10 +56,10 @@ static void run_simple_command(char **cmd) {
             close(fd);
 
         // обработка <
-        } else if (strcmp(cmd[i], "<") == 0) {
+        } else if (cmd_tokens[i].type == TOKEN_INPUT) {
             i++;
-            if (cmd[i] == NULL) {
-                write(STDERR_FILENO, "mysh: missing file name or redirection\n", 40);
+            if (cmd[i] == NULL || cmd_tokens[i].type != TOKEN_WORD) {
+                fprintf(stderr, "mysh: expected file name after <\n");
                 _exit(1);
             }
 
@@ -82,6 +83,7 @@ static void run_simple_command(char **cmd) {
     cmd_args[cmd_arg] = NULL;
 
     signal(SIGINT, SIG_DFL); // возвращаем обработку Ctrl+C в дочернем процессе
+    
     if (cmd_arg > 0) {
         if (strcmp(cmd_args[0], "echo") == 0) {
             int result = run_echo(cmd_args);
@@ -95,7 +97,7 @@ static void run_simple_command(char **cmd) {
     _exit(0);
 }
 
-int runner(char **args) {
+int runner(char **args, const Token *tokens) {
     if (args[0] == NULL) {
         return 0;
     }
@@ -108,7 +110,7 @@ int runner(char **args) {
     int pipe_pos = -1;
     // проверка на наличие |
     for (int i = 0; args[i] != NULL; i++) {
-        if (strcmp(args[i], "|") == 0) {
+        if (tokens[i].type == TOKEN_PIPE) {
             // если есть символ |, то запоминаем его позицию
             pipe_pos = i;
             break;
@@ -143,7 +145,7 @@ int runner(char **args) {
             close(pipefd[0]); // закрываем конец для чтения в дочернем процессе
             dup2(pipefd[1], STDOUT_FILENO); // перенаправляем stdout в конец для записи пайпа
             close(pipefd[1]);
-            run_simple_command(cmd1);
+            run_simple_command(cmd1, tokens);
         }
         
         // создаем второй процесс для команды справа от |
@@ -159,7 +161,7 @@ int runner(char **args) {
             close(pipefd[1]); // закрываем конец для записи в дочернем процессе
             dup2(pipefd[0], STDIN_FILENO); // перенаправляем stdin в конец для чтения пайпа
             close(pipefd[0]);
-            run_simple_command(cmd2);
+            run_simple_command(cmd2, &tokens[pipe_pos + 1]);
         }
 
         close(pipefd[0]);
@@ -185,7 +187,7 @@ int runner(char **args) {
         perror("mysh: fork");
         return 1;
     } else if (pid == 0) {
-        run_simple_command(args);
+        run_simple_command(args, tokens);
     } else {
         int status;
         waitpid(pid, &status, 0);
