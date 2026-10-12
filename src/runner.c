@@ -8,72 +8,61 @@
 #include "runner.h"
 #include "commands.h"
 
-// чтобы не дублировать код в случае пайпа
+static void set_redirect(char **cmd, const Token *cmd_tokens, int *position) {
+    TokenType type = cmd_tokens[*position].type;
+
+    (*position)++; // переход от оператора к токену с именем файла
+
+    // проверка на наличие имени файла после перенаправления
+    if (cmd[*position] == NULL || cmd_tokens[*position].type != TOKEN_WORD) {
+        fprintf(stderr, "mysh: expected file name after redirection\n");
+        _exit(1);
+    }
+
+    int flags;
+    int target;
+
+    if (type == TOKEN_INPUT) {
+        flags = O_RDONLY;
+        target = STDIN_FILENO;
+    } else if (type == TOKEN_OUTPUT) {
+        flags = O_WRONLY | O_CREAT | O_TRUNC;
+        target = STDOUT_FILENO;
+    } else {
+        flags = O_WRONLY | O_CREAT | O_APPEND;
+        target = STDOUT_FILENO;
+    }
+
+    int fd = open(cmd[*position], flags, 0666);
+    if (fd == -1) {
+        perror("mysh: open");
+        _exit(1);
+    }
+
+    if (dup2(fd, target) == -1) {
+        perror("mysh: dup2");
+        _exit(1);
+    }
+
+    // закрываем лишний fd(target открыт)
+    if (fd != target && close(fd) == -1) {
+        perror("mysh: close");
+        _exit(1);
+    }
+
+}
+
+// выполняет одну команду - отдельно или как часть конвейцра
 static void run_simple_command(char **cmd, const Token *cmd_tokens) {
     char *cmd_args[128]; // массив аргументов для execvp
     int cmd_arg = 0; // счетчик аргументов
 
     // обработка перенаправления ввода/вывода
     for (int i = 0; cmd[i] != NULL; i++) {
-        // обработка >
-        if (cmd_tokens[i].type == TOKEN_OUTPUT) {
-            // пропуск >
-            i++;
+        TokenType type = cmd_tokens[i].type;
 
-            // проверка на наличие имени после символа >
-            if (cmd[i] == NULL || cmd_tokens[i].type != TOKEN_WORD) {
-                fprintf(stderr, "mysh: expected file name after >\n");
-                _exit(1);
-            }
-
-            // переписываем файл если он существует или создает новый
-            int fd = open(cmd[i], O_WRONLY | O_CREAT | O_TRUNC, 0666);
-            if (fd == -1) {
-                perror("mysh: open");
-                _exit(1);
-            }
-
-            // перенаправление вывода в файл
-            dup2(fd, STDOUT_FILENO);
-            close(fd);
-
-        // обработка >>
-        } else if (cmd_tokens[i].type == TOKEN_APPEND) {
-            i++;
-            if (cmd[i] == NULL || cmd_tokens[i].type != TOKEN_WORD) {
-                fprintf(stderr, "mysh: expected file name after >>\n");
-                _exit(1);
-            }
-
-            // записываем в конец файла если он существует или создает новый
-            int fd = open(cmd[i], O_WRONLY | O_CREAT | O_APPEND, 0666);
-            if (fd == -1) {
-                perror("mysh: open");
-                _exit(1);
-            }
-
-            dup2(fd, STDOUT_FILENO);
-            close(fd);
-
-        // обработка <
-        } else if (cmd_tokens[i].type == TOKEN_INPUT) {
-            i++;
-            if (cmd[i] == NULL || cmd_tokens[i].type != TOKEN_WORD) {
-                fprintf(stderr, "mysh: expected file name after <\n");
-                _exit(1);
-            }
-
-            // открываем файл только для чтения
-            int fd = open(cmd[i], O_RDONLY);
-            if (fd == -1) {
-                perror("mysh: open");
-                _exit(1);
-            }
-
-            // перенаправление ввода из файла
-            dup2(fd, STDIN_FILENO);
-            close(fd);
-
+        if (type == TOKEN_OUTPUT || type == TOKEN_INPUT || type == TOKEN_APPEND) {
+            set_redirect(cmd, cmd_tokens, &i);
         } else {
             // если не символ перенаправления то добавляем в массив аргументов
             cmd_args[cmd_arg++] = cmd[i];

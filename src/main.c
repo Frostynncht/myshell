@@ -36,6 +36,11 @@ int main() {
         Token *tokens = split_line(line);
         free(line); // больше не нужна(лексер делает копии)
 
+        // проверка завершения лексера
+        if (tokens == NULL) {
+            continue;
+        }
+
         size_t count = 0;
 
         // проверка на наличие не реализованных операторов

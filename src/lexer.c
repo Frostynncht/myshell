@@ -99,28 +99,91 @@ Token *split_line(const char *line) {
                 break;
         }
 
-        // идем до конца слова(или еще не реализованного символа)
+        // если это не оператор, то ищем слово
         if (type == TOKEN_WORD) { 
-            while (*ptr != '\0' && *ptr != ' ' && *ptr != '\t' && strchr("|&;()<>", *ptr) == NULL) {
+            char *word = malloc(strlen(ptr) + 1);
+            if (word == NULL) {
+                perror("mysh: malloc");
+                exit(1);
+            }
+
+            // обработка кавычек
+            size_t word_len = 0;
+            char quote = '\0';
+
+            while (*ptr != '\0') {
+                // обработка \ внутри кавычек и вне их
+                if (*ptr == '\\' && quote != '\'') {
+                    if (quote == '\0' && ptr[1] == '\0') {
+                        fprintf(stderr, "mysh: unfinished slash\n");
+                        free(word);
+                        tokens[position].type = TOKEN_END;
+                        tokens[position].text = NULL;
+                        free_tokens(tokens);
+                        return NULL;
+                    }
+
+                    // если мы не в кавычках и после \ стоит " или \, то печатаем их
+                    if (quote == '\0' || ptr[1] == '"' || ptr[1] == '\\') {
+                        // пропускаем \ и записываем следующий символ в word
+                        ptr++;
+                        word[word_len] = *ptr;
+                        word_len++;
+                        ptr++;
+                        continue;
+                    }
+                }
+
+                // если мы не в кавычках
+                if (quote == '\0') {
+                    if (*ptr == ' ' || *ptr == '\t' || strchr("|&;()<>", *ptr) != NULL) {
+                        break;
+                    }
+
+                    // запоминаем кавычку и продолжаем
+                    if (*ptr == '\'' || *ptr == '"') {
+                        quote = *ptr;
+                        ptr++;
+                        continue;
+                    }
+                    // если внутри кавычек и встретили закрываюшую кавычку
+                } else if (*ptr == quote) {
+                    quote = '\0';
+                    ptr++;
+                    continue;
+                }
+
+                // записываем без кавычек по символьно в word
+                word[word_len] = *ptr;
+                word_len++;
                 ptr++;
             }
 
-            len = (size_t)(ptr - start);
+            if (quote != '\0') {
+                fprintf(stderr, "mysh: unclosed quote\n");
+                free(word);
+
+                // при не закрытой кавычке освобождаем уже обработанные токены
+                tokens[position].type = TOKEN_END;
+                tokens[position].text = NULL;
+                free_tokens(tokens);
+                return NULL;
+            }
+
+            word[word_len] = '\0';
+            tokens[position].text = word;
         } else {
+            // операторы копируем в текст токена
+            tokens[position].text = strndup(start, len);
+            if (tokens[position].text == NULL) {
+                perror("mysh: strndup");
+                exit(1);
+            }
             ptr += len;
         }
 
-        // обновляем информацию для токена
         tokens[position].type = type;
-        tokens[position].text = strndup(start, len);
-
-        if (tokens[position].text == NULL) {
-            perror("mysh: strndup");
-            exit(1);
-        }
-
         position++;
-
     }
 
     tokens[position].type = TOKEN_END;
