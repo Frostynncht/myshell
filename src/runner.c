@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <errno.h>
 #include <signal.h>
 #include "runner.h"
 #include "commands.h"
@@ -52,7 +53,7 @@ static void set_redirect(char **cmd, const Token *cmd_tokens, int *position) {
 
 }
 
-// выполняет одну команду - отдельно или как часть конвейцра
+// выполняет одну команду - отдельно или внутри конвейцра
 static void run_simple_command(char **cmd, const Token *cmd_tokens) {
     char *cmd_args[128]; // массив аргументов для execvp
     int cmd_arg = 0; // счетчик аргументов
@@ -86,6 +87,161 @@ static void run_simple_command(char **cmd, const Token *cmd_tokens) {
     _exit(0);
 }
 
+static int run_pipe(char **args, const Token *tokens, int pipe_count) {
+    int command_count = pipe_count + 1;
+    pid_t *pids = malloc(command_count * sizeof(pid_t));
+    
+    if (pids == NULL) {
+        perror("mysh: malloc");
+        return 1;
+    }
+
+    int prev_read = -1;
+    int start = 0;
+    int started = 0; // сколько детей получилось создать
+    int failed = 0; // была ли ошибка запуска или ожидания
+
+    // одна команда - один проход цикла
+    for (int command = 0; command < command_count; command++) {
+        int end = start;
+        
+        // читаем до | или конца массива
+        while (args[end] != NULL && tokens[end].type != TOKEN_PIPE) {
+            end++;
+        }
+
+        int have_next;
+        // есть ли еще команда
+        if (command + 1 < command_count) {
+            have_next = 1;
+        } else {
+            have_next = 0;
+        }
+
+        // два конца нового канала
+        int pipefd[2] = {-1, -1};
+
+        // если есть еще команда
+        if (have_next == 1) {
+            args[end] = NULL; // отделяет команду от следующей
+            
+            // создаем канал от текущей до следующецй команде
+            if (pipe(pipefd) == -1) {
+                perror("mysh: pipe");
+                failed = 1;
+                break;
+            }
+        }
+
+        pid_t pid = fork();
+        if (pid == -1) {
+            perror("mysh: fork");
+            // ребенка не создали - новый канал теперь не нужен
+            if (have_next == 1) {
+                close(pipefd[0]);
+                close(pipefd[1]);
+            }
+            failed = 1;
+            break;
+        // настраиваем ввод и вывод в ребенке
+        } else if (pid == 0) {
+            // если есть предыдущая команда, то делаем ввод от предыдущей команды
+            if (prev_read != -1 && dup2(prev_read, STDIN_FILENO) == -1) {
+                perror("mysh: dup2");
+                _exit(1);
+            }         
+
+            // если есть следующая команда, то делаем вывод в новый канал
+            if (have_next == 1 && dup2(pipefd[1], STDOUT_FILENO) == -1) {
+                perror("mysh: dup2");
+                _exit(1);
+            }
+
+            // после dup2 старый номер чтения ребенку больше не нужен
+            if (prev_read != -1) {
+                close(prev_read);
+            }
+
+            // закрываем неиспользуемые номера нового канала
+            if (have_next == 1) {
+                close(pipefd[0]);
+                close(pipefd[1]);
+            }
+
+            // выполняет одну команду
+            run_simple_command(&args[start], &tokens[start]);
+            _exit(1);
+        }
+
+        // родитель записывает pid ребенка в массив(для waitpid)
+        pids[started] = pid;
+        started++;
+
+        // родителю не нужен предыдущий канал чтения
+        if (prev_read != -1) {
+            close(prev_read);
+        }
+
+        // родитель закрывает новый канал для записи 
+        if (have_next == 1) {
+            close(pipefd[1]);
+            prev_read = pipefd[0];
+        } else { // нового канала больше нет
+            prev_read = -1;
+        }
+
+        // переводим на первый токен следующей команды
+        start = end + 1;
+    }
+
+    // если запуск 
+    if (prev_read != -1) {
+        // получилось ли закрыть предыдущий канал
+        if (close(prev_read) == -1) {
+            perror("mysh: close");
+            failed = 1;
+        }
+    }
+
+    // результат последней команды
+    int last_status = 0;
+    
+    // ждем результатов детей которых уде запустили
+    for (int i = 0; i < started; i++) {
+        int status;
+        pid_t result;
+
+        // первый раз ждем этого ребенка
+        result = waitpid(pids[i], &status, 0);
+        // если ожидание прервал сигнал - повторяем вызов
+        while (result == -1 && errno == EINTR) {
+            result = waitpid(pids[i], &status, 0);
+        }
+
+        if (result == -1) {
+            perror("mysh: waitpid");
+            failed = 1;
+        } else if (i == started - 1) { // сохраняем статус последней команды
+            last_status = status;
+        }
+    }
+
+    // массив ids больше не нужен
+    free(pids);
+
+    // проверка были ли ошибка
+    if (failed == 1) {
+        return 1;
+    }
+
+    // показывает как завершилась последняя команда
+    if (WIFEXITED(last_status)) {
+        return WEXITSTATUS(last_status);
+    }
+
+    return 1;
+}
+
 int runner(char **args, const Token *tokens) {
     if (args[0] == NULL) {
         return 0;
@@ -96,78 +252,24 @@ int runner(char **args, const Token *tokens) {
         return 1;
     }
 
-    int pipe_pos = -1;
+    int pipe_count = 0;
     // проверка на наличие |
     for (int i = 0; args[i] != NULL; i++) {
-        if (tokens[i].type == TOKEN_PIPE) {
-            // если есть символ |, то запоминаем его позицию
-            pipe_pos = i;
-            break;
+        // ищем только | 
+        if (tokens[i].type != TOKEN_PIPE) {
+            continue;
         }
+
+        if (i == 0 || args[i + 1] == NULL || tokens[i + 1].type == TOKEN_PIPE || tokens[i - 1].type == TOKEN_PIPE) {
+            fprintf(stderr, "mysh: expected command near |\n");
+            return 1;
+        }
+
+        pipe_count++;
     }
 
-    if (pipe_pos != -1) {       
-        // если есть |, делим строку на до и после | и запускаем пайп
-        char *pipe_token = args[pipe_pos];
-        args[pipe_pos] = NULL;
-        char **cmd1 = args; // слева от |
-        char **cmd2 = &args[pipe_pos + 1];// справа от |
-
-        // создаем пайп
-        int pipefd[2];
-        if (pipe(pipefd) < 0) {
-            perror("mysh: pipe");
-            args[pipe_pos] = pipe_token;
-            return 1;
-        }
-
-        // создаем первый процесс для команды слева от |
-        pid_t pid1 = fork();
-        if (pid1 == -1) {
-            perror("mysh: fork");
-            close(pipefd[0]);
-            close(pipefd[1]);
-            args[pipe_pos] = pipe_token;
-            return 1;
-
-        } else if (pid1 == 0) {
-            close(pipefd[0]); // закрываем конец для чтения в дочернем процессе
-            dup2(pipefd[1], STDOUT_FILENO); // перенаправляем stdout в конец для записи пайпа
-            close(pipefd[1]);
-            run_simple_command(cmd1, tokens);
-        }
-        
-        // создаем второй процесс для команды справа от |
-        pid_t pid2 = fork();
-        if (pid2 == -1) {
-            perror("mysh: fork");
-            close(pipefd[0]);
-            close(pipefd[1]);
-            args[pipe_pos] = pipe_token;
-            return 1;
-
-        } else if (pid2 == 0) {
-            close(pipefd[1]); // закрываем конец для записи в дочернем процессе
-            dup2(pipefd[0], STDIN_FILENO); // перенаправляем stdin в конец для чтения пайпа
-            close(pipefd[0]);
-            run_simple_command(cmd2, &tokens[pipe_pos + 1]);
-        }
-
-        close(pipefd[0]);
-        close(pipefd[1]);
-
-        int status;
-        waitpid(pid1, NULL, 0); // NULL, так как нам не нужен статус первого процесса
-        waitpid(pid2, &status, 0); // ждем завершения второго процесса и получаем его статус
-
-        args[pipe_pos] = pipe_token; // восстанавливаем символ | в массиве аргументов
-
-        // возвращаем код завершения второго процесса
-        if (WIFEXITED(status)) {
-            return WEXITSTATUS(status);
-        } else {
-            return 0;
-        }
+    if (pipe_count > 0) {
+        return run_pipe(args, tokens, pipe_count);
     }
 
     // если нет символа |
