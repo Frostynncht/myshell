@@ -55,8 +55,19 @@ static void set_redirect(char **cmd, const Token *cmd_tokens, int *position) {
 
 // выполняет одну команду - отдельно или внутри конвейцра
 static void run_simple_command(char **cmd, const Token *cmd_tokens) {
-    char *cmd_args[128]; // массив аргументов для execvp
-    int cmd_arg = 0; // счетчик аргументов
+    // cчитаем токены для выделения памяти под массив аргументов
+    int token_count = 0;
+    while(cmd[token_count] != NULL) {
+        token_count++;
+    }
+
+    char **cmd_args = malloc(((size_t)token_count + 1) * sizeof(*cmd_args));
+    if (cmd_args == NULL) {
+        perror("mysh: malloc");
+        _exit(1);
+    }
+
+    int cmd_arg = 0;
 
     // обработка перенаправления ввода/вывода
     for (int i = 0; cmd[i] != NULL; i++) {
@@ -75,15 +86,42 @@ static void run_simple_command(char **cmd, const Token *cmd_tokens) {
     signal(SIGINT, SIG_DFL); // возвращаем обработку Ctrl+C в дочернем процессе
     
     if (cmd_arg > 0) {
+        if (strcmp(cmd_args[0], "exit") == 0) {
+            free(cmd_args);
+            _exit(0);
+        }
+
+        if (strcmp(cmd_args[0], "cd") == 0) {
+            int result = run_cd(cmd_args);
+            free(cmd_args);
+            _exit(result);
+        }
+
+        if (strcmp(cmd_args[0], "pwd") == 0) {
+            int result = run_pwd();
+
+            if (fflush(stdout) == EOF) {
+                perror("mysh: pwd");
+                result = 1;
+            }
+
+            free(cmd_args);
+            _exit(result);
+        }
+
         if (strcmp(cmd_args[0], "echo") == 0) {
             int result = run_echo(cmd_args);
+            free(cmd_args);
             _exit(result);
         }
 
         execvp(cmd_args[0], cmd_args);
         perror("mysh");
+        free(cmd_args);
         _exit(127);
     }
+
+    free(cmd_args);
     _exit(0);
 }
 
@@ -281,7 +319,16 @@ int runner(char **args, const Token *tokens) {
         run_simple_command(args, tokens);
     } else {
         int status;
-        waitpid(pid, &status, 0);
+        pid_t result = waitpid(pid, &status, 0);
+
+        while (result == -1 && errno == EINTR) {
+            result = waitpid(pid, &status, 0);
+        }
+
+        if (result == -1) {
+            perror("mysh: waitpid");
+            return 1;
+        }
         
         // возвращаем код завершения дочернего процесс
         if (WIFEXITED(status)) {
