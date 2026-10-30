@@ -115,10 +115,17 @@ static void run_simple_command(char **cmd, const Token *cmd_tokens) {
             _exit(result);
         }
 
+        // при успехе execvp заменяет программу ребенка - дальше обработка только ошибки
         execvp(cmd_args[0], cmd_args);
+        
+        int exit_status = 126;
+        if (errno == ENOENT) {
+            exit_status = 127;
+        }
+        
         perror("mysh");
         free(cmd_args);
-        _exit(127);
+        _exit(exit_status);
     }
 
     free(cmd_args);
@@ -277,6 +284,11 @@ static int run_pipe(char **args, const Token *tokens, int pipe_count) {
         return WEXITSTATUS(last_status);
     }
 
+    // если последняя команда завершилась по сигналу
+    if (WIFSIGNALED(last_status)) {
+        return 128 + WTERMSIG(last_status);
+    }
+
     return 1;
 }
 
@@ -333,9 +345,14 @@ int runner(char **args, const Token *tokens) {
         // возвращаем код завершения дочернего процесс
         if (WIFEXITED(status)) {
             return WEXITSTATUS(status);
-        } else {
-            return 0;
+        } 
+
+        // если дочерний процесс завершился по сигналу
+        if (WIFSIGNALED(status)) {
+            return 128 + WTERMSIG(status);
         }
+
+        return 1;
     }
 
     return 0;

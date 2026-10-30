@@ -8,12 +8,64 @@
 #include "commands.h"
 #include "input.h"
 
+// проверка записи комманд до запуска
+static int check_tokens(const Token *tokens) {
+    int have_command = 0;
+
+    for (size_t i = 0; tokens[i].type != TOKEN_END; i++) {
+        TokenType type = tokens[i].type;
+
+        if (type == TOKEN_WORD) {
+            have_command = 1;
+            continue;
+        }
+
+        // после перенаправления должно быть имя файла
+        if (type == TOKEN_INPUT || type == TOKEN_OUTPUT || type == TOKEN_APPEND) {
+            if (tokens[i + 1].type != TOKEN_WORD) {
+                fprintf(stderr, "mysh: expected file name after redirection\n");
+                return 0;
+            }
+
+            // пропускаем имя файла
+            i++;
+            continue;
+        }
+
+        if (type == TOKEN_PIPE) {
+            // слева от пайпа должна быть команда
+            if (have_command == 0) {
+                fprintf(stderr, "mysh: expected command near |\n");
+                return 0;
+            }
+
+            // ищем команду справа от пайпа
+            have_command = 0;
+            continue;
+        }
+
+        fprintf(stderr, "not ready\n");
+        return 0;
+    }
+
+    if (tokens[0].type != TOKEN_END && have_command == 0) {
+        fprintf(stderr, "mysh: expected command\n");
+        return 0;
+    }
+
+    return 1;
+}
+
 int main() {
     // игнорируем Ctrl+C в родительском процессе
     signal(SIGINT, SIG_IGN);
 
     // запоминаем код завершения помледней команды
     int last_status = 0;
+
+    //запоминаем вводится ли команда с терминала
+    int interactive = isatty(STDIN_FILENO);
+
     while (1) {
         // если не удалось вывести приглашение - завершаем
         if (print_prompt() == 0) {
@@ -41,26 +93,30 @@ int main() {
         // проверка завершения лексера
         if (tokens == NULL) {
             last_status = 2;
+
+            if (interactive == 0) {
+                return last_status;
+            }
+
             continue;
         }
 
-        size_t count = 0;
-
-        // проверка на наличие не реализованных операторов
-        while (tokens[count].type != TOKEN_END) {
-            TokenType type = tokens[count].type;
-
-            if (type == TOKEN_OR || type == TOKEN_AMPERSAND || type == TOKEN_AND || type == TOKEN_SEMICOLON || type == TOKEN_LPAREN || type == TOKEN_RPAREN) {
-                fprintf(stderr, "mysh: not ready %s\n", tokens[count].text);
-                break;
-            }
-            count++; 
-        }
-
-        if (tokens[count].type != TOKEN_END) {
+        // нашлась ли ошибка
+        if (check_tokens(tokens) == 0) {
             last_status = 2;
             free_tokens(tokens);
+
+            if (interactive == 0) {
+                return last_status;
+            }
+
             continue;
+        }
+
+        // считает токены для массива arg
+        size_t count = 0;
+        while(tokens[count].type != TOKEN_END) {
+            count++;
         }
 
         // создаем массив аргументов(text токена) для передачи в runner
