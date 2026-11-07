@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -std=c23 -Wall -Wextra -D_POSIX_C_SOURCE=200809L
 
-SRCS = src/main.c src/lexer.c src/runner.c src/commands.c src/input.c src/ast.c
+SRCS = src/main.c src/lexer.c src/runner.c src/commands.c src/input.c src/ast.c src/parser.c
 OBJS = $(SRCS:.c=.o)
 
 all: myshell

@@ -7,54 +7,7 @@
 #include "runner.h"
 #include "commands.h"
 #include "input.h"
-
-// проверка записи комманд до запуска
-static int check_tokens(const Token *tokens) {
-    int have_command = 0;
-
-    for (size_t i = 0; tokens[i].type != TOKEN_END; i++) {
-        TokenType type = tokens[i].type;
-
-        if (type == TOKEN_WORD) {
-            have_command = 1;
-            continue;
-        }
-
-        // после перенаправления должно быть имя файла
-        if (type == TOKEN_INPUT || type == TOKEN_OUTPUT || type == TOKEN_APPEND) {
-            if (tokens[i + 1].type != TOKEN_WORD) {
-                fprintf(stderr, "mysh: expected file name after redirection\n");
-                return 0;
-            }
-
-            // пропускаем имя файла
-            i++;
-            continue;
-        }
-
-        if (type == TOKEN_PIPE) {
-            // слева от пайпа должна быть команда
-            if (have_command == 0) {
-                fprintf(stderr, "mysh: expected command near |\n");
-                return 0;
-            }
-
-            // ищем команду справа от пайпа
-            have_command = 0;
-            continue;
-        }
-
-        fprintf(stderr, "not ready\n");
-        return 0;
-    }
-
-    if (tokens[0].type != TOKEN_END && have_command == 0) {
-        fprintf(stderr, "mysh: expected command\n");
-        return 0;
-    }
-
-    return 1;
-}
+#include "parser.h"
 
 int main() {
     // игнорируем Ctrl+C в родительском процессе
@@ -101,8 +54,15 @@ int main() {
             continue;
         }
 
-        // нашлась ли ошибка
-        if (check_tokens(tokens) == 0) {
+        // если нет токенов после лексера
+        if (tokens[0].type == TOKEN_END) {
+            free_tokens(tokens);
+            continue;
+        }
+
+        // проверяем команду и строим дерево
+        Node *tree = parse_tokens(tokens);
+        if (tree == NULL) {
             last_status = 2;
             free_tokens(tokens);
 
@@ -112,6 +72,9 @@ int main() {
 
             continue;
         }
+        
+        // пока используем дерево только для проверки
+        free_tree(tree);
 
         // считает токены для массива arg
         size_t count = 0;
