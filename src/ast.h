@@ -10,8 +10,8 @@ typedef enum {
     NODE_PIPE, // |
     NODE_AND, // &&
     NODE_OR, // ||
-    NODE_SEQUENCE, // ;
-    NODE_BACKGROUND // &
+    NODE_SEMICOLON, // ;
+    NODE_AMPERSAND // &
 } NodeType;
 
 // перенаправление и указатель на следующее

@@ -9,6 +9,28 @@
 #include "input.h"
 #include "parser.h"
 
+// проверяет умеет ли runner выполнить все дерево 
+static int is_not_working(const Node *node) {
+    if (node == NULL) {
+        return 0;
+    }
+
+    if (node->type != NODE_SIMPLE && node->type != NODE_PIPE) {
+        return 1;
+    }
+
+    // проверяем левые и правые ветви
+    if (is_not_working(node->left) == 1) {
+        return 1;
+    }
+
+    if (is_not_working(node->right) == 1) {
+        return 1;
+    }
+
+    return 0;
+}
+
 int main() {
     // игнорируем Ctrl+C в родительском процессе
     signal(SIGINT, SIG_IGN);
@@ -65,6 +87,21 @@ int main() {
         if (tree == NULL) {
             last_status = 2;
             free_tokens(tokens);
+
+            if (interactive == 0) {
+                return last_status;
+            }
+
+            continue;
+        }
+
+        //print_tree(tree, 0);
+        // выполнение && и || пока не подключено
+        if (is_not_working(tree) == 1) {
+            fprintf(stderr, "mysh: not ready\n");
+            free_tree(tree);
+            free_tokens(tokens);
+            last_status = 2;
 
             if (interactive == 0) {
                 return last_status;

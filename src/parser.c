@@ -8,6 +8,8 @@ typedef struct {
     size_t position;
 } Parser;
 
+static Node *parse_list(Parser *parser);
+
 // возвращает текущий токен
 static const Token *cur_token(const Parser *parser) {
     return &parser->tokens[parser->position];
@@ -179,17 +181,56 @@ static Node *parse_simple(Parser *parser) {
 
 }
 
-// соединяет команды оператором | в дерево
+// разбирает команды с ()
+static Node *parse_subshell(Parser *parser) {
+    // пропускаем (
+    advance(parser);
+
+    Node *body = parse_list(parser);
+    if (body == NULL) {
+        return NULL;
+    }
+
+    if (match_type(parser, TOKEN_RPAREN) == 0) {
+        fprintf(stderr, "mysh: unclosed (\n");
+        free_tree(body);
+        return NULL;
+    }
+
+    Node *node = create_node(NODE_SUBSHELL);
+    node->left = body;
+
+    // после ) перенаправления охватывают все внутри ()
+    while (is_redirect(cur_token(parser)->type)) {
+        if (parse_redirect(parser, node) == 0) {
+            free_tree(node);
+            return NULL;
+        }
+    }
+
+    return node;
+}
+
+// выбярает простую команду или команду в скобках
+static Node *parse_command(Parser *parser) {
+    if (check_type(parser, TOKEN_LPAREN)) {
+        return parse_subshell(parser);
+    }
+
+    return parse_simple(parser);
+}
+
+// разбирает команды с оператором |
 static Node *parse_pipe(Parser *parser) {
-    Node *left = parse_simple(parser);
+    Node *left = parse_command(parser);
 
     if (left == NULL) {
         return NULL;
     }
-    
+
     // после пайпа должна быть вторая команда
     while (match_type(parser, TOKEN_PIPE)) {
-        Node *right = parse_simple(parser);
+        Node *right = parse_command(parser);
 
         if (right == NULL) {
             free_tree(left);
@@ -208,6 +249,87 @@ static Node *parse_pipe(Parser *parser) {
     return left;
 }
 
+// разбирает команды с && и ||
+static Node *parse_and_or(Parser *parser) {
+    Node *left = parse_pipe(parser);
+    
+    if (left == NULL) {
+        return NULL;
+    }
+
+    // пока следующий && или || - добавляет узел
+    while (check_type(parser, TOKEN_AND) || check_type(parser, TOKEN_OR)) {
+        TokenType operation = advance(parser)->type;
+
+        Node *right = parse_pipe(parser);
+
+        if (right == NULL) {
+            free_tree(left);
+            return NULL;
+        }
+
+        NodeType node_type;
+        if (operation == TOKEN_AND) {
+            node_type = NODE_AND;
+        } else {
+            node_type = NODE_OR;
+        }
+
+        Node *node = create_node(node_type);
+        node->left = left;
+        node->right = right;
+
+        // новый оператор становится вершиной собранного дерева
+        left = node;
+    }
+
+    return left;
+}
+
+// разбирает команды с ; и &
+static Node *parse_list(Parser *parser) {
+    Node *left = parse_and_or(parser);
+
+    if (left == NULL) {
+        return NULL;
+    }
+
+    TokenType separator = cur_token(parser)->type;
+
+    if (separator != TOKEN_SEMICOLON && separator != TOKEN_AMPERSAND) {
+        return left;
+    }
+
+    // пропускаем separator
+    advance(parser);
+
+    // допускается если есть только левая часть(a ; или b &)
+    Node *right = NULL;
+
+    // например если (echo hello ;)
+    if (check_type(parser, TOKEN_END) == 0 && check_type(parser, TOKEN_RPAREN) == 0) {
+        right = parse_list(parser);
+
+        if (right == NULL) {
+            free_tree(left);
+            return NULL;
+        }
+    }
+
+    NodeType node_type;
+    if (separator == TOKEN_SEMICOLON) {
+        node_type = NODE_SEMICOLON;
+    } else {
+        node_type = NODE_AMPERSAND;
+    }
+
+    Node *node = create_node(node_type);
+    node->left = left;
+    node->right = right;
+
+    return node;
+}
+
 // строит дерево команд из массива токенов
 Node *parse_tokens(const Token *tokens) {
     Parser parser;
@@ -218,7 +340,8 @@ Node *parse_tokens(const Token *tokens) {
         return NULL;
     }
 
-    Node *tree = parse_pipe(&parser);
+    Node *tree = parse_list(&parser);
+
     if (tree == NULL) {
         return NULL;
     }

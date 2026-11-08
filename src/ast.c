@@ -38,10 +38,10 @@ static const char *node_type_name(NodeType type) {
         case NODE_OR:
             return "OR";
 
-        case NODE_SEQUENCE:
+        case NODE_SEMICOLON:
             return "SEQUENCE";
 
-        case NODE_BACKGROUND:
+        case NODE_AMPERSAND:
             return "BACKGROUND";
     }
 
