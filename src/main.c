@@ -110,7 +110,29 @@ int main() {
             continue;
         }
         
-        // пока используем дерево только для проверки
+        // одиночные внешние команды выполняем через дерево
+        if (tree->type == NODE_SIMPLE && strcmp(tree->arg[0], "exit") != 0) {
+            char **tree_arg = tree->arg;
+            int my_command = 0;
+
+            if (strcmp(tree_arg[0], "cd") == 0 || 
+            strcmp(tree_arg[0], "pwd") == 0 || 
+            strcmp(tree_arg[0], "echo") == 0 || 
+            strcmp(tree_arg[0], "help") == 0) {
+                my_command = 1;
+            }
+
+            if (my_command == 1) {
+                last_status = run_my_command_node(tree);
+            } else {
+                last_status = run_simple_node(tree);
+            }
+
+            free_tree(tree);
+            free_tokens(tokens);
+            continue;
+        }
+        // остальные команды пока передаём старому исполнителю
         free_tree(tree);
 
         // считает токены для массива arg
@@ -132,16 +154,6 @@ int main() {
         }
 
         arg[count] = NULL;
-
-        // проверка на наличие чего-либо кроме слов
-        int have_operator = 0;
-
-        for (size_t i = 0; i < count; i++) {
-            if (tokens[i].type != TOKEN_WORD) {
-                have_operator = 1;
-                break;
-            }
-        }
 
         // проверка на наличие оператора пайпа
         int have_pipe = 0;
@@ -220,22 +232,6 @@ int main() {
             free(arg);
             free_tokens(tokens);
             return exit_status;
-        }
-
-        // cd
-        if (strcmp(arg[0], "cd") == 0 && have_pipe == 0) {
-            last_status = run_cd(arg);
-            free(arg);
-            free_tokens(tokens);
-            continue;
-        }
-
-        // pwd
-        if (strcmp(arg[0], "pwd") == 0 && have_operator == 0) {
-            last_status = run_pwd();
-            free(arg);
-            free_tokens(tokens);
-            continue;
         }
 
         // исполняет остальные команды

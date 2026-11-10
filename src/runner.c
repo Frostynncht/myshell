@@ -9,17 +9,8 @@
 #include "runner.h"
 #include "commands.h"
 
-static void set_redirect(char **cmd, const Token *cmd_tokens, int *position) {
-    TokenType type = cmd_tokens[*position].type;
-
-    (*position)++; // переход от оператора к токену с именем файла
-
-    // проверка на наличие имени файла после перенаправления
-    if (cmd[*position] == NULL || cmd_tokens[*position].type != TOKEN_WORD) {
-        fprintf(stderr, "mysh: expected file name after redirection\n");
-        _exit(1);
-    }
-
+// открывает файл и перенаправляет ввод и вывод
+static int set_redirect(TokenType type, const char *file_name) {
     int flags;
     int target;
 
@@ -27,30 +18,32 @@ static void set_redirect(char **cmd, const Token *cmd_tokens, int *position) {
         flags = O_RDONLY;
         target = STDIN_FILENO;
     } else if (type == TOKEN_OUTPUT) {
-        flags = O_WRONLY | O_CREAT | O_TRUNC;
+        flags = O_WRONLY | O_CREAT | O_TRUNC; 
         target = STDOUT_FILENO;
     } else {
         flags = O_WRONLY | O_CREAT | O_APPEND;
         target = STDOUT_FILENO;
     }
 
-    int fd = open(cmd[*position], flags, 0666);
+    int fd = open(file_name, flags, 0666);
     if (fd == -1) {
         perror("mysh: open");
-        _exit(1);
+        return 0;
     }
 
     if (dup2(fd, target) == -1) {
         perror("mysh: dup2");
-        _exit(1);
+        close(fd);
+        return 0;
     }
 
-    // закрываем лишний fd(target открыт)
+    // после dup2 номер fd больше не нужен
     if (fd != target && close(fd) == -1) {
         perror("mysh: close");
-        _exit(1);
+        return 0;
     }
 
+    return 1;
 }
 
 // выполняет одну команду - отдельно или внутри конвейцра
@@ -73,8 +66,21 @@ static void run_simple_command(char **cmd, const Token *cmd_tokens) {
     for (int i = 0; cmd[i] != NULL; i++) {
         TokenType type = cmd_tokens[i].type;
 
-        if (type == TOKEN_OUTPUT || type == TOKEN_INPUT || type == TOKEN_APPEND) {
-            set_redirect(cmd, cmd_tokens, &i);
+        if (type == TOKEN_OUTPUT || 
+            type == TOKEN_INPUT || 
+            type == TOKEN_APPEND) {
+            i++;
+
+            if (cmd[i] == NULL || cmd_tokens[i].type != TOKEN_WORD) {
+                fprintf(stderr, "mysh: expected file name after redirection\n");
+                free(cmd_args);
+                _exit(1);
+            }
+
+            if (set_redirect(type, cmd[i]) == 0) {
+                free(cmd_args);
+                _exit(1);
+            }
         } else {
             // если не символ перенаправления то добавляем в массив аргументов
             cmd_args[cmd_arg++] = cmd[i];
@@ -111,6 +117,12 @@ static void run_simple_command(char **cmd, const Token *cmd_tokens) {
 
         if (strcmp(cmd_args[0], "echo") == 0) {
             int result = run_echo(cmd_args);
+            free(cmd_args);
+            _exit(result);
+        }
+
+        if (strcmp(cmd_args[0], "help") == 0) {
+            int result = run_help();
             free(cmd_args);
             _exit(result);
         }
@@ -292,6 +304,151 @@ static int run_pipe(char **args, const Token *tokens, int pipe_count) {
     return 1;
 }
 
+// выполняет встроенные команды cd, pwd, echo, help из узла дерева команд
+int run_my_command_node(const Node *node) {
+    if (fflush(stdout) == EOF) {
+        perror("mysh: fflush");
+        return 1;
+    }
+
+    int saved_input = dup(STDIN_FILENO);
+    if (saved_input == -1) {
+        perror("mysh: dup");
+        return 1;
+    }
+
+    // сохраняем stdout чтобы вернуть его после перенаправления
+    int saved_output = dup(STDOUT_FILENO);
+    if (saved_output == -1) {
+        perror("mysh: dup");
+
+        if (close(saved_input) == -1) {
+            perror("mysh: close");
+        }
+
+        return 1;
+    }
+
+    int result = 1;
+    int redirects_ok = 1;
+
+    const Redirection *redirect = node->redirects;
+    while(redirect != NULL) {
+        if (set_redirect(redirect->type, redirect->file_name) == 0) {
+            redirects_ok = 0;
+            break;
+        }
+
+        redirect = redirect->next;
+    }
+
+    // выполняем нужную встроенную команду
+    if (redirects_ok == 1) {
+        if (strcmp(node->arg[0], "cd") == 0) {
+            result = run_cd(node->arg);
+        } else if (strcmp(node->arg[0], "pwd") == 0) {
+            result = run_pwd();
+        } else if (strcmp(node->arg[0], "echo") == 0) {
+            result = run_echo(node->arg);
+        } else if (strcmp(node->arg[0], "help") == 0) {
+            result = run_help();
+        } 
+    }
+
+    if (fflush(stdout) == EOF) {
+        perror("mysh: fflush");
+        result = 1;
+    }
+
+    // возвращаем оболочке прежние ввод и вывод
+    if (dup2(saved_input, STDIN_FILENO) == -1) {
+        perror("mysh: dup2");
+        result = 1;
+    }
+
+    if (dup2(saved_output, STDOUT_FILENO) == -1) {
+        perror("mysh: dup2");
+        result = 1;
+    }
+
+    // закрываем дополнительные дескрипторы после восстановления
+    if (close(saved_input) == -1) {
+        perror("mysh: close");
+        result = 1;
+    }
+
+    if (close(saved_output) == -1) {
+        perror("mysh: close");
+        result = 1;
+    }
+
+    return result;
+}
+
+// запускает отдельную программу по данным из узла дерева
+int run_simple_node(const Node *node) {
+    if (fflush(stdout) == EOF) {
+        perror("mysh: runner");
+        return 1;
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("mysh: fork");
+        return 1;
+    } else if (pid == 0) {
+        // возвращаем реагирование на ctrl+c
+        signal(SIGINT, SIG_DFL);
+
+        // настраиваем перенаправления по порядку из списка
+        const Redirection *redirect = node->redirects;
+        while(redirect != NULL) {
+            if (set_redirect(redirect->type, redirect->file_name) == 0) {
+                _exit(1);
+            }
+
+            redirect = redirect->next;
+        }
+
+        // запускаем программу с аргументами от парсера
+        execvp(node->arg[0], node->arg);
+        // ниже при ошибке execvp
+        
+        int exit_status = 126;
+        if (errno == ENOENT) {
+            exit_status = 127;
+        }
+
+        perror("mysh");
+        _exit(exit_status);
+    } else {
+        int status;
+        pid_t result = waitpid(pid, &status, 0);
+
+        // если сигнал прервал ожидаение - ждем еще раз ребенка
+        while (result == -1 && errno == EINTR) {
+            result = waitpid(pid, &status, 0);
+        }
+
+        if (result == -1) {
+            perror("mysh: waitpid");
+            return 1;
+        }
+
+        if (WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        }
+
+        if (WIFSIGNALED(status)) {
+            return 128 + WTERMSIG(status);
+        }
+
+        return 1;
+    }
+
+    return 0;
+}
+
 int runner(char **args, const Token *tokens) {
     if (args[0] == NULL) {
         return 0;
@@ -310,7 +467,9 @@ int runner(char **args, const Token *tokens) {
             continue;
         }
 
-        if (i == 0 || args[i + 1] == NULL || tokens[i + 1].type == TOKEN_PIPE || tokens[i - 1].type == TOKEN_PIPE) {
+        if (i == 0 || args[i + 1] == NULL || 
+            tokens[i + 1].type == TOKEN_PIPE || 
+            tokens[i - 1].type == TOKEN_PIPE) {
             fprintf(stderr, "mysh: expected command near |\n");
             return 1;
         }

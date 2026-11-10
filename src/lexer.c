@@ -124,7 +124,8 @@ Token *split_line(const char *line) {
                     }
 
                     // если мы не в кавычках или после \ стоит " или \, то печатаем их
-                    if (quote == '\0' || ptr[1] == '"' || ptr[1] == '\\') {
+                    if (quote == '\0' || 
+                        ptr[1] == '"' || ptr[1] == '\\') {
                         // пропускаем \ и записываем следующий символ в word
                         ptr++;
                         word[word_len] = *ptr;
@@ -136,7 +137,8 @@ Token *split_line(const char *line) {
 
                 // если мы не в кавычках
                 if (quote == '\0') {
-                    if (*ptr == ' ' || *ptr == '\t' || strchr("|&;()<>", *ptr) != NULL) {
+                    if (*ptr == ' ' || *ptr == '\t' || 
+                        strchr("|&;()<>", *ptr) != NULL) {
                         break;
                     }
 

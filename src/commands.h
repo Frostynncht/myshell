@@ -9,4 +9,6 @@ int run_cd(char **arg);
 
 int run_echo(char **arg);
 
+int run_help(void);
+
 #endif

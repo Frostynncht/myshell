@@ -49,7 +49,9 @@ static int match_type(Parser *parser, TokenType type) {
 
 // проверяет является ли перенаправлением
 static int is_redirect(TokenType type) {
-    if (type == TOKEN_OUTPUT || type == TOKEN_INPUT || type == TOKEN_APPEND) {
+    if (type == TOKEN_OUTPUT || 
+        type == TOKEN_INPUT || 
+        type == TOKEN_APPEND) {
         return 1;
     }
 
@@ -307,7 +309,8 @@ static Node *parse_list(Parser *parser) {
     Node *right = NULL;
 
     // например если (echo hello ;)
-    if (check_type(parser, TOKEN_END) == 0 && check_type(parser, TOKEN_RPAREN) == 0) {
+    if (check_type(parser, TOKEN_END) == 0 && 
+    check_type(parser, TOKEN_RPAREN) == 0) {
         right = parse_list(parser);
 
         if (right == NULL) {

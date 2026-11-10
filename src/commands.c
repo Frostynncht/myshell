@@ -105,3 +105,18 @@ int run_echo(char **arg) {
 
     return 0;
 }
+
+int run_help(void) {
+    printf("cd [dir] - change current directory\n");
+    printf("pwd - print current directory\n");
+    printf("echo [-n] [args] - print arguments\n");
+    printf("help - show this help\n");
+    printf("exit [code] - close the shell\n");
+
+    if (fflush(stdout) == EOF) {
+        perror("mysh: help");
+        return 1;
+    }
+
+    return 0;
+}
