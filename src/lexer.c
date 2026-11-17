@@ -3,6 +3,64 @@
 #include <string.h>
 #include "lexer.h"
 
+// определяет нужно ли читать после Enter
+LineState get_line_state(const char *line) {
+    const char *ptr = line;
+    char quote = '\0';
+    // для определения комментария в начале слова
+    int word_start = 1;
+
+    while(*ptr != '\0') {
+        // в одинарных кавычках ищем только закрывающую
+        if (quote == '\'') {
+            if (*ptr == '\'') {
+                quote = '\0';
+            }
+
+            ptr++;
+            continue;
+        }
+
+        if (*ptr == '\\') {
+            if (ptr[1] == '\0') {
+                return LINE_SLASH;
+            }
+
+            // если мы не в кавычках или после \ стоит " или \ то пропускаем их
+            if (quote == '\0' || ptr[1] == '"' || ptr[1] == '\\') {
+                ptr += 2;
+                word_start = 0; // слово началось
+                continue;
+            }
+        }
+
+        if (quote == '"') {
+            if (*ptr == '"') {
+                quote = '\0';
+            }
+        } else if (*ptr == '#' && word_start == 1) { // комментарий не влияет на продолжение команды
+            return LINE_READY;
+        } else if (*ptr == '\'' || *ptr == '"') { // открывающие кавычки
+            quote = *ptr;
+            word_start = 0; // слово началось 
+        } else if (*ptr == ' ' || *ptr == '\t' || 
+        strchr("|&;()<>", *ptr) != NULL) { // 
+            word_start = 1; // слово может начаться
+        } else { // обычные символы
+            word_start = 0; // слово началось
+        }
+
+        ptr++;
+    }
+
+    if (quote != '\0') { // если осталась незакрытая кавычка
+        return LINE_QUOTE;
+    }
+
+    return LINE_READY;
+}
+
+// возвращает массив токенов
 Token *split_line(const char *line) {
     size_t capacity = 4; // кол-во слов
     size_t position = 0;
@@ -101,6 +159,25 @@ Token *split_line(const char *line) {
 
         // если это не оператор, то ищем слово
         if (type == TOKEN_WORD) { 
+            // проверяем номер дескриптора перед < или >
+            const char *number_ptr = ptr;
+
+            while(*number_ptr >= '0' && *number_ptr <= '9') {
+                number_ptr++;
+            }
+
+            if (number_ptr != ptr && 
+                (*number_ptr == '<' || *number_ptr == '>')) {
+                fprintf(stderr, "mysh: redirection with descriptor not supported\n");
+            
+                // помечаем конец массива для освобождения
+                tokens[position].type = TOKEN_END;
+                tokens[position].text = NULL;
+                free_tokens(tokens);
+                
+                return NULL;
+            }
+
             char *word = malloc(strlen(ptr) + 1);
             if (word == NULL) {
                 perror("mysh: malloc");
@@ -203,4 +280,38 @@ void free_tokens(Token *tokens) {
     }
 
     free(tokens);
+}
+
+void print_tokens(const Token *tokens) {
+    for (size_t i = 0; tokens[i].type != TOKEN_END; i++) {
+        if (tokens[i].type == TOKEN_WORD) {
+            printf("WORD \"");
+        } else {
+            printf("OPERATOR \"");
+        }
+
+        for (const char *ptr = tokens[i].text; *ptr != '\0'; ptr++) {
+            switch(*ptr) {
+                case '\n':
+                    printf("\\n");
+                    break;
+                case '\t':
+                    printf("\\t");
+                    break;
+                case '\\':
+                    printf("\\\\");
+                    break;
+                case '"':
+                    printf("\\\"");
+                    break;
+                default:
+                    putchar(*ptr);
+                    break;
+            }
+        }
+        
+        printf("\"\n");
+    }
+
+    printf("END\n");
 }

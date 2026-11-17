@@ -3,8 +3,9 @@
 #include <unistd.h>
 #include "input.h"
 #include "commands.h"
+#include "lexer.h"
 
-char *read_line(void) {
+char *read_line(int interactive) {
     size_t capacity = 64;
     size_t len = 0;
     char *line = malloc(capacity);
@@ -16,8 +17,36 @@ char *read_line(void) {
 
     int input_char; 
 
-    // читаем символы до Enter или конца ввода
-    while((input_char = getchar()) != '\n' && input_char != EOF) {
+    // читаем команду полностью вместе с продолжением строки
+    while((input_char = getchar()) != EOF) {
+        if (input_char == '\n') {
+            line[len] = '\0';
+            LineState state = get_line_state(line);
+
+            if (state == LINE_READY) {
+                break;
+            }
+
+            if (state == LINE_SLASH) {
+                // убираем завершающий "\"
+                len--;
+            }
+
+            // вывод приглашения при продолжении в терминале
+            if (interactive == 1) {
+                if (printf("> ") < 0 || fflush(stdout) == EOF) {
+                    perror("mysh: prompt");
+                    free(line);
+                    return NULL;
+                }
+            }
+
+            if (state == LINE_SLASH) {
+                // Enter тоже не записываем
+                continue;
+            }
+        }
+
         // перевыделяем память под строку
         if (len + 1 >= capacity) {
             capacity *= 2;

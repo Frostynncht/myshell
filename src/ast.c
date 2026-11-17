@@ -92,13 +92,28 @@ void print_tree(const Node *node, int level) {
 
     if (node->type == NODE_SIMPLE) {
         for (size_t i = 0; i < node->arg_count; i++) {
-            printf(" {%s}", node->arg[i]);
+            printf(" %s", node->arg[i]);
 
             if (i + 1 < node->arg_count) {
                 printf(",");
             }
         }
     }
+
+    const Redirection *redirect = node->redirects;
+    while (redirect != NULL) {
+        if (redirect->type == TOKEN_INPUT) {
+            printf(" <");
+        } else if (redirect->type == TOKEN_OUTPUT) {
+            printf(" >");
+        } else {
+            printf(" >>");
+        }
+
+        printf(" %s", redirect->file_name);
+        redirect = redirect->next;
+    }
+
 
     printf("\n");
 

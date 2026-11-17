@@ -23,8 +23,23 @@ typedef struct {
     char *text;
 } Token;
 
-Token *split_line(const char *line); // возвращает массив аргументов
+// состояние строки перед чтением продолжения
+typedef enum {
+    LINE_READY, // закончить чтение
+    LINE_SLASH, // продолжить чтение после '\'
+    LINE_QUOTE // незакрытая кавычка(продолжить чтение)
+} LineState;
 
-void free_tokens(Token *tokens); // освобождает память(массив токенов)
+// получает состояние строки перед чтением продолжения
+LineState get_line_state(const char *line);
+
+// возвращает массив токенов
+Token *split_line(const char *line);
+
+// освобождает память(массив токенов)
+void free_tokens(Token *tokens);
+
+// выводит токены для проверки лексера
+void print_tokens(const Token *tokens);
 
 #endif

@@ -31,7 +31,22 @@ static int is_not_working(const Node *node) {
     return 0;
 }
 
-int main() {
+// argc — количество аргументов запуска вместе с именем программы
+// argv — строки с аргументами запуска
+int main(int argc, char **argv) {
+    int dump_tokens = 0;
+    int dump_ast = 0;
+
+    // выбираем режим по аргументам запуска
+    if (argc == 2 && strcmp(argv[1], "--dump-ast") == 0) {
+        dump_ast = 1;
+    } else if (argc == 2 && strcmp(argv[1], "--dump-tokens") == 0) {
+        dump_tokens = 1;
+    } else if (argc != 1) {
+        fprintf(stderr, "mysh: expected no argument, --dump-ast or --dump-tokens\n");
+        return 2;
+    }
+
     // игнорируем Ctrl+C в родительском процессе
     signal(SIGINT, SIG_IGN);
 
@@ -41,25 +56,26 @@ int main() {
     //запоминаем вводится ли команда с терминала
     int interactive = isatty(STDIN_FILENO);
 
+    // при печати дерева приглашение не нужно
+    if (dump_ast == 1 || dump_tokens == 1) {
+        interactive = 0;
+    }
+
     while (1) {
+
         // если не удалось вывести приглашение - завершаем
-        if (print_prompt() == 0) {
+        if (interactive == 1 && print_prompt() == 0) {
             break;
         }
         
-        char *line = read_line();
+        char *line = read_line(interactive);
 
         // после Ctrl+D в терминале переходим на новую строку
         if (line == NULL) {
-            if (isatty(STDIN_FILENO) == 1) {
+            if (interactive == 1) {
                 write(STDOUT_FILENO, "\n", 1);
             }
             break;
-        }
-
-        if (line[0] == '\0') {
-            free(line);
-            continue;
         }
 
         Token *tokens = split_line(line);
@@ -76,9 +92,20 @@ int main() {
             continue;
         }
 
-        // если нет токенов после лексера
+        if (dump_tokens == 1) {
+            print_tokens(tokens);
+            free_tokens(tokens);
+            return 0;
+        }
+
+        // пустая строка или комментарий не содержит команды
         if (tokens[0].type == TOKEN_END) {
             free_tokens(tokens);
+
+            if (dump_ast == 1) {
+                return 0;
+            }
+            
             continue;
         }
 
@@ -95,7 +122,14 @@ int main() {
             continue;
         }
 
-        //print_tree(tree, 0);
+        // показываем результат парсера и завершаемся до исполнения команд
+        if (dump_ast == 1) {
+            print_tree(tree, 0);
+            free_tree(tree);
+            free_tokens(tokens);
+            return 0;
+        }
+
         // выполнение && и || пока не подключено
         if (is_not_working(tree) == 1) {
             fprintf(stderr, "mysh: not ready\n");
