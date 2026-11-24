@@ -7,9 +7,9 @@
 // исполняет простую внешнюю команду из узла дерева 
 int run_simple_node(const Node *node);
 
-// исполняет комманду, из полученного массива аргументов
-int runner(char **arg, const Token *tokens);
+// выполняет конвейер из дерева команд
+int run_pipe_node(const Node *tree, int previous_status);
 
-int run_my_command_node(const Node *node);
+int run_my_command_node(const Node *node, int previous_status, int *end_shell);
 
 #endif

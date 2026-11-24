@@ -1,24 +1,50 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include "input.h"
 #include "commands.h"
 #include "lexer.h"
 
-char *read_line(int interactive) {
+char *read_line(int interactive, int *input_error) {
+    *input_error = 0;
     size_t capacity = 64;
     size_t len = 0;
     char *line = malloc(capacity);
 
     if (line == NULL) {
+        *input_error = 1;
         perror("mysh: malloc");
         return NULL;
     }
 
     int input_char; 
 
-    // читаем команду полностью вместе с продолжением строки
-    while((input_char = getchar()) != EOF) {
+    // читаем по одному символу(чтобы не забирать воод след команды)
+    while(1) {
+        char symbol;
+        ssize_t result = read(STDIN_FILENO, &symbol, 1);
+
+        if (result == -1) {
+            // если чтение прервал сигнал то повторяем
+            if (errno == EINTR) {
+                continue;
+            }
+
+            *input_error = 1;
+            perror("mysh: input");
+            free(line);
+            return NULL;
+        }
+
+        // данные в исходном потоке закончились
+        if (result == 0) {
+            input_char = EOF;
+            break;
+        }
+
+        input_char = (unsigned char)symbol;
+
         if (input_char == '\n') {
             line[len] = '\0';
             LineState state = get_line_state(line);
@@ -35,6 +61,7 @@ char *read_line(int interactive) {
             // вывод приглашения при продолжении в терминале
             if (interactive == 1) {
                 if (printf("> ") < 0 || fflush(stdout) == EOF) {
+                    *input_error = 1;
                     perror("mysh: prompt");
                     free(line);
                     return NULL;
@@ -53,6 +80,7 @@ char *read_line(int interactive) {
             char *new_line = realloc(line, capacity);
 
             if (new_line == NULL) {
+                *input_error = 1;
                 perror("mysh: realloc");
                 free(line);
                 return NULL;
@@ -63,13 +91,6 @@ char *read_line(int interactive) {
 
         line[len] = (char)input_char;
         len++;
-    }
-
-    // проверяем произошла ли ошибка при чтении
-    if (ferror(stdin)) {
-        perror("mysh: input");
-        free(line);
-        return NULL;
     }
 
     // если ввод закончился до первого символа - строки нет

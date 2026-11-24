@@ -321,9 +321,9 @@ static Node *parse_list(Parser *parser) {
 
     NodeType node_type;
     if (separator == TOKEN_SEMICOLON) {
-        node_type = NODE_SEMICOLON;
+        node_type = NODE_SEQUENCE;
     } else {
-        node_type = NODE_AMPERSAND;
+        node_type = NODE_BACKGROUND;
     }
 
     Node *node = create_node(node_type);

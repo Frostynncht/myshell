@@ -11,4 +11,6 @@ int run_echo(char **arg);
 
 int run_help(void);
 
+int get_exit_code(char **arg, int last_status, int *exit_status);
+
 #endif

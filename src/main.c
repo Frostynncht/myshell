@@ -68,10 +68,14 @@ int main(int argc, char **argv) {
             break;
         }
         
-        char *line = read_line(interactive);
+        int input_error;
+        char *line = read_line(interactive, &input_error);
 
         // после Ctrl+D в терминале переходим на новую строку
         if (line == NULL) {
+            if (input_error == 1) {
+                return 1;
+            }
             if (interactive == 1) {
                 write(STDOUT_FILENO, "\n", 1);
             }
@@ -144,136 +148,40 @@ int main(int argc, char **argv) {
             continue;
         }
         
-        // одиночные внешние команды выполняем через дерево
-        if (tree->type == NODE_SIMPLE && strcmp(tree->arg[0], "exit") != 0) {
+        // одиночные команды выполняем через дерево
+        if (tree->type == NODE_SIMPLE) {
             char **tree_arg = tree->arg;
             int my_command = 0;
+            int end_shell = 0;
 
             if (strcmp(tree_arg[0], "cd") == 0 || 
             strcmp(tree_arg[0], "pwd") == 0 || 
             strcmp(tree_arg[0], "echo") == 0 || 
-            strcmp(tree_arg[0], "help") == 0) {
+            strcmp(tree_arg[0], "help") == 0 ||
+            strcmp(tree_arg[0], "exit") == 0){
                 my_command = 1;
             }
 
             if (my_command == 1) {
-                last_status = run_my_command_node(tree);
+                last_status = run_my_command_node(tree, last_status, &end_shell);
             } else {
                 last_status = run_simple_node(tree);
             }
 
             free_tree(tree);
             free_tokens(tokens);
+ 
+            if (end_shell == 1) {
+                return last_status;
+            }
+
             continue;
         }
-        // остальные команды пока передаём старому исполнителю
+
+        // конвейер выполняет по данным из дерева
+        last_status = run_pipe_node(tree, last_status);
         free_tree(tree);
-
-        // считает токены для массива arg
-        size_t count = 0;
-        while(tokens[count].type != TOKEN_END) {
-            count++;
-        }
-
-        // создаем массив аргументов(text токена) для передачи в runner
-        char **arg = malloc((count + 1) * sizeof(char *));
-        if (arg == NULL) {
-            perror("mysh: malloc");
-            free_tokens(tokens);
-            break;
-        }
-
-        for (size_t i = 0; i < count; i++) {
-            arg[i] = tokens[i].text;
-        }
-
-        arg[count] = NULL;
-
-        // проверка на наличие оператора пайпа
-        int have_pipe = 0;
-
-        for (size_t i = 0; i < count; i++) {
-            if (tokens[i].type == TOKEN_PIPE) {
-                have_pipe = 1;
-                break;
-            }
-        }
-
-        if (arg[0] == NULL) {
-            free(arg);
-            free_tokens(tokens);
-            continue;
-        }
-
-        // без пайпа exit завершает сам шелл
-        if (strcmp(arg[0], "exit") == 0 && have_pipe == 0) {
-            int exit_status = last_status;
-            if (arg[1] != NULL) {
-                if (arg[2] != NULL) {
-                    fprintf(stderr, "mysh: exit: too many arguments\n");
-                    last_status = 2;
-                    free(arg);
-                    free_tokens(tokens);
-                    continue;
-                }
-
-                const char *number_text = arg[1];
-                int i = 0;
-                int neg = 0;
-                int valid = 1;
-                int number = 0;
-
-                // пропускаем знак числа(запоминаем если минус)
-                if (number_text[i] == '+' || number_text[i] == '-') {
-                    if (number_text[i] == '-') {
-                        neg = 1;
-                    }
-                    i++;
-                }
-
-                if (number_text[i] == '\0') {
-                    valid = 0;
-                }
-
-                // проверяем каждый символ и собираем число
-                while (number_text[i] != '\0') {
-                    if (number_text[i] < '0' || number_text[i] > '9') {
-                        valid = 0;
-                        break;
-                    }
-
-                    // в пределах [0; 255]
-                    number = (number * 10 + (number_text[i] - '0')) % 256;
-                    i++;
-                }
-
-                if (valid == 0) {
-                    fprintf(stderr, "mysh: exit: numeric argument required\n");
-                    last_status = 2;
-                    free(arg);
-                    free_tokens(tokens);
-                    continue;
-                }
-
-                // переводим отрицательное в положительное [0; 255]
-                if (neg == 1) {
-                    number = (256 - number) % 256;
-                }
-
-                exit_status = number;
-            }
-            
-            free(arg);
-            free_tokens(tokens);
-            return exit_status;
-        }
-
-        // исполняет остальные команды
-        last_status = runner(arg, tokens);
-
-        free(arg);
         free_tokens(tokens);
     }
-
     return last_status;
 }

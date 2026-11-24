@@ -120,3 +120,59 @@ int run_help(void) {
 
     return 0;
 }
+
+// получает код exit, но не завершает процесс 
+int get_exit_code(char **arg, int last_status, int *exit_status) {
+    *exit_status = last_status;
+
+    if (arg[1] == NULL) {
+        return 1;
+    }
+
+    if (arg[2] != NULL) {
+        fprintf(stderr, "mysh: exit: too many arguments\n");
+        return 0;
+    }
+
+    const char *number_text = arg[1];
+    int i = 0;
+    int neg = 0;
+    int valid = 1;
+    int number = 0;
+
+    // пропускаем +, запоминаем -
+    if (number_text[i] == '+' || number_text[i] == '-') {
+        if (number_text[i] == '-') {
+            neg = 1;
+        }
+        i++;
+    }
+
+    // после знака должна быть хотя бы одна цифра
+    if (number_text[i] == '\0') {
+        valid = 0;
+    }
+
+    while (number_text[i] != '\0') {
+        if (number_text[i] < '0' || number_text[i] > '9') {
+            valid = 0;
+            break;
+        }
+
+        // собираем число в пределах от 0 до 255
+        number = (number * 10 + (number_text[i] - '0')) % 256;
+        i++;   
+    }
+
+    if (valid == 0) {
+        fprintf(stderr, "mysh: exit: expected number argument\n");
+        return 0;
+    }
+
+    if (neg == 1) {
+        number = (256 - number) % 256;
+    }
+
+    *exit_status = number;
+    return 1;
+}
