@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <errno.h>
 #include "lexer.h"
 #include "runner.h"
 #include "commands.h"
@@ -15,7 +16,7 @@ static int is_not_working(const Node *node) {
         return 0;
     }
 
-    if (node->type != NODE_SIMPLE && node->type != NODE_PIPE) {
+    if (node->type == NODE_BACKGROUND) {
         return 1;
     }
 
@@ -36,19 +37,25 @@ static int is_not_working(const Node *node) {
 int main(int argc, char **argv) {
     int dump_tokens = 0;
     int dump_ast = 0;
+    const char *command_text = NULL;
 
     // выбираем режим по аргументам запуска
     if (argc == 2 && strcmp(argv[1], "--dump-ast") == 0) {
         dump_ast = 1;
     } else if (argc == 2 && strcmp(argv[1], "--dump-tokens") == 0) {
         dump_tokens = 1;
+    } else if (argc == 3 && strcmp(argv[1], "-c") == 0) {
+        command_text = argv[2];
     } else if (argc != 1) {
-        fprintf(stderr, "mysh: expected no argument, --dump-ast or --dump-tokens\n");
+        fprintf(stderr, "mysh: usage: myshell '-c command | --dump-ast | --dump-tokens'\n");
         return 2;
-    }
+    } 
 
-    // игнорируем Ctrl+C в родительском процессе
-    signal(SIGINT, SIG_IGN);
+    if (signal(SIGINT, SIG_IGN) == SIG_ERR ||
+        signal(SIGQUIT, SIG_IGN) == SIG_ERR) {
+            perror("mysh: signal");
+            return 1;
+        }
 
     // запоминаем код завершения помледней команды
     int last_status = 0;
@@ -56,8 +63,8 @@ int main(int argc, char **argv) {
     //запоминаем вводится ли команда с терминала
     int interactive = isatty(STDIN_FILENO);
 
-    // при печати дерева приглашение не нужно
-    if (dump_ast == 1 || dump_tokens == 1) {
+    // в проверочных режимах и при -c приглашение не выводим
+    if (dump_ast == 1 || dump_tokens == 1 || command_text != NULL) {
         interactive = 0;
     }
 
@@ -65,11 +72,17 @@ int main(int argc, char **argv) {
 
         // если не удалось вывести приглашение - завершаем
         if (interactive == 1 && print_prompt() == 0) {
-            break;
+            return 1;
         }
         
         int input_error;
-        char *line = read_line(interactive, &input_error);
+        char *line;
+
+        if (command_text != NULL) {
+            line = read_command(&command_text, &input_error);
+        } else {
+            line = read_line(interactive, &input_error);
+        }
 
         // после Ctrl+D в терминале переходим на новую строку
         if (line == NULL) {
@@ -77,7 +90,14 @@ int main(int argc, char **argv) {
                 return 1;
             }
             if (interactive == 1) {
-                write(STDOUT_FILENO, "\n", 1);
+                while(write(STDOUT_FILENO, "\n", 1) == -1) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+
+                    perror("mysh: write");
+                    return 1;
+                }
             }
             break;
         }
@@ -134,7 +154,7 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        // выполнение && и || пока не подключено
+        // не запускаем дерево с не готовыми операциями
         if (is_not_working(tree) == 1) {
             fprintf(stderr, "mysh: not ready\n");
             free_tree(tree);
@@ -148,40 +168,16 @@ int main(int argc, char **argv) {
             continue;
         }
         
-        // одиночные команды выполняем через дерево
-        if (tree->type == NODE_SIMPLE) {
-            char **tree_arg = tree->arg;
-            int my_command = 0;
-            int end_shell = 0;
+        // выполняем дерево
+        int end_shell = 0;
+        last_status = run_tree(tree, last_status, &end_shell);
 
-            if (strcmp(tree_arg[0], "cd") == 0 || 
-            strcmp(tree_arg[0], "pwd") == 0 || 
-            strcmp(tree_arg[0], "echo") == 0 || 
-            strcmp(tree_arg[0], "help") == 0 ||
-            strcmp(tree_arg[0], "exit") == 0){
-                my_command = 1;
-            }
-
-            if (my_command == 1) {
-                last_status = run_my_command_node(tree, last_status, &end_shell);
-            } else {
-                last_status = run_simple_node(tree);
-            }
-
-            free_tree(tree);
-            free_tokens(tokens);
- 
-            if (end_shell == 1) {
-                return last_status;
-            }
-
-            continue;
-        }
-
-        // конвейер выполняет по данным из дерева
-        last_status = run_pipe_node(tree, last_status);
         free_tree(tree);
         free_tokens(tokens);
+
+        if (end_shell == 1) {
+            return last_status;
+        }
     }
     return last_status;
 }

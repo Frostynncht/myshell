@@ -5,16 +5,28 @@
 #include <errno.h>
 #include "commands.h"
 
-int run_pwd(void) {
-    char *dir = get_curr_dir();
+// выводит текущий каталог, аргументы не поддерживаются
+int run_pwd(char **arg) {
+    if (arg[1] != NULL) {
+        fprintf(stderr, "mysh: pwd: no arguments expected\n");
+        return 2;
+    }
 
+    char *dir = get_curr_dir();
     if (dir == NULL) {
         return 1;
     }
 
-    printf("%s\n", dir);
+    int result = 0;
+
+    // проверка удалось ли записать путь 
+    if (printf("%s\n", dir) < 0 || fflush(stdout) == EOF || ferror(stdout)) {
+        perror("mysh: pwd");
+        result = 1;
+    }
+
     free(dir);
-    return 0;
+    return result;
 }
 
 char *get_curr_dir(void) {
@@ -87,18 +99,23 @@ int run_echo(char **arg) {
 
     // печатаем все аргументы начиная с first_arg
     for (int i = first_arg; arg[i] != NULL; i++) {
-        if( i > first_arg) {
-            printf(" ");
+        if( i > first_arg && printf(" ") < 0) {
+            perror("mysh: echo");
+            return 1;
         }
-        printf("%s", arg[i]);
+        if (printf("%s", arg[i]) < 0) {
+            perror("mysh: echo");
+            return 1;
+        }
     }
 
-    if (print_newline == 1) {
-        printf("\n");
+    if (print_newline == 1 && printf("\n") < 0) {
+        perror("mysh: echo");
+        return 1;
     }
 
     // проверка вывелось ли все в stdout
-    if (fflush(stdout) == EOF) {
+    if (fflush(stdout) == EOF || ferror(stdout)) {
         perror("mysh: echo");
         return 1;
     }
@@ -113,7 +130,7 @@ int run_help(void) {
     printf("help - show this help\n");
     printf("exit [code] - close the shell\n");
 
-    if (fflush(stdout) == EOF) {
+    if (fflush(stdout) == EOF || ferror(stdout)) {
         perror("mysh: help");
         return 1;
     }

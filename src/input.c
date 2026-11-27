@@ -6,7 +6,7 @@
 #include "commands.h"
 #include "lexer.h"
 
-char *read_line(int interactive, int *input_error) {
+static char *read_input(int interactive, int *input_error, const char **text) {
     *input_error = 0;
     size_t capacity = 64;
     size_t len = 0;
@@ -22,28 +22,37 @@ char *read_line(int interactive, int *input_error) {
 
     // читаем по одному символу(чтобы не забирать воод след команды)
     while(1) {
-        char symbol;
-        ssize_t result = read(STDIN_FILENO, &symbol, 1);
-
-        if (result == -1) {
-            // если чтение прервал сигнал то повторяем
-            if (errno == EINTR) {
-                continue;
+        if (text != NULL) {
+            // конец текста переданного через -c
+            if (**text == '\0') {
+                input_char = EOF;
+                break;
             }
 
-            *input_error = 1;
-            perror("mysh: input");
-            free(line);
-            return NULL;
-        }
+            input_char = (unsigned char)**text;
+            (*text)++;
+        } else {
+            char symbol;
+            ssize_t result = read(STDIN_FILENO, &symbol, 1);
 
-        // данные в исходном потоке закончились
-        if (result == 0) {
-            input_char = EOF;
-            break;
-        }
+            if (result == -1) {
+                if (errno == EINTR) {
+                    continue;
+                }
 
-        input_char = (unsigned char)symbol;
+                *input_error = 1;
+                perror("mysh: input");
+                free(line);
+                return NULL;
+            }
+
+            if (result == 0) {
+                input_char = EOF;
+                break;
+            }
+
+            input_char = (unsigned char)symbol;
+        }
 
         if (input_char == '\n') {
             line[len] = '\0';
@@ -101,6 +110,16 @@ char *read_line(int interactive, int *input_error) {
 
     line[len] = '\0';
     return line;
+}
+
+// читает команду из стандартного ввода
+char *read_line(int interactive, int *input_error) {
+    return read_input(interactive, input_error, NULL);
+}
+
+// читает команду из строки аргумента -c
+char *read_command(const char **text, int *input_error) {
+    return read_input(0, input_error, text);
 }
 
 int print_prompt(void) {

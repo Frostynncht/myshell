@@ -1,7 +1,7 @@
 #ifndef COMMANDS_H
 #define COMMANDS_H
 
-int run_pwd(void);
+int run_pwd(char **arg);
 
 char *get_curr_dir(void);
 

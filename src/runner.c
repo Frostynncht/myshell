@@ -9,6 +9,50 @@
 #include "runner.h"
 #include "commands.h"
 
+// закрывает дескриптор и сообщает об ошибке
+static int close_fd(int fd) {
+    if (close(fd) == -1) {
+        perror("mysh: close");
+        return 0;
+    }
+    
+    return 1;
+}
+
+// возвращает обычную обработку сигналов в ребенке
+static int reset_child_signal(void) {
+    if (signal(SIGINT, SIG_DFL) == SIG_ERR ||
+    signal(SIGQUIT, SIG_DFL) == SIG_ERR ||
+    signal(SIGPIPE, SIG_DFL) == SIG_ERR) {
+        perror("mysh: signal");
+        return 0;
+    }
+
+    return 1;
+}
+
+// повторяем dup2 если вызов прервал сигнал
+static int copy_fd(int fd, int target) {
+    int result = dup2(fd, target);
+
+    while (result == -1 && errno == EINTR) {
+        result = dup2(fd, target);
+    }
+    
+    return result;
+}
+
+// сохраняем дескриптор при прерывании сигналом
+static int save_fd(int fd) {
+    int result = dup(fd);
+
+    while (result == -1 && errno == EINTR) {
+        result = dup(fd);
+    }
+
+    return result;
+}
+
 // открывает файл и перенаправляет ввод и вывод
 static int set_redirect(TokenType type, const char *file_name) {
     int flags;
@@ -26,29 +70,109 @@ static int set_redirect(TokenType type, const char *file_name) {
     }
 
     int fd = open(file_name, flags, 0666);
+
+    // если открытие файла прервал сигнал - повторяем 
+    while (fd == -1 && errno == EINTR) {
+        fd = open(file_name, flags, 0666);
+    }
+
     if (fd == -1) {
-        perror("mysh: open");
+        fprintf(stderr, "mysh: %s: %s\n", file_name, strerror(errno));
         return 0;
     }
 
-    if (dup2(fd, target) == -1) {
+    if (copy_fd(fd, target) == -1) {
         perror("mysh: dup2");
-        close(fd);
+        close_fd(fd);
         return 0;
     }
 
     // после dup2 номер fd больше не нужен
-    if (fd != target && close(fd) == -1) {
-        perror("mysh: close");
+    if (fd != target && close_fd(fd) == 0) {
         return 0;
     }
 
     return 1;
 }
 
+// запускает пронрамме а при неудаче возвращает номер ошибки
+static int exec_program(char **arg) {
+    if (arg[0][0] == '\0') {
+        return ENOENT;
+    }
+
+    if (strchr(arg[0], '/') != NULL) {
+        execv(arg[0], arg);
+        return errno;
+    }
+
+    // получаем каталоги поиска если нету то PATH используем стандартные
+    const char *path = getenv("PATH");
+    if (path == NULL) {
+        path = "/bin:/usr/bin";
+    }
+
+    int permission_error = 0;
+    size_t name_len = strlen(arg[0]);
+
+    while (1) {
+        size_t dir_len = 0;
+        // считаем символы текущего каталога до : или конца PATH
+        while (path[dir_len] != ':' && path[dir_len] != '\0') {
+            dir_len++;
+        }
+
+        // место для каталога, /, имени программы и нуля в конце
+        char *file_name = malloc(dir_len + name_len + 2);
+        if (file_name == NULL) {
+            return ENOMEM;
+        }
+
+        size_t position = 0;
+
+        if (dir_len != 0) {
+            // копируем только текущий каталог, без остальной части PATH
+            memcpy(file_name, path, dir_len);
+            position = dir_len;
+            file_name[position] = '/';
+            position++;
+        }
+
+        // дописываем имя программы с нулем в конце
+        strcpy(file_name + position, arg[0]);
+
+        execv(file_name, arg);
+
+        int saved_errno = errno;
+        free(file_name);
+
+        // продолжаем поиск только если нет файла или запрет доступа
+        if (saved_errno == EACCES) {
+            permission_error = 1;
+        } else if (saved_errno != ENOENT && saved_errno != ENOTDIR) {
+            return saved_errno;
+        }
+
+        // если текущий каталог последний, заканчиваем поиск
+        if (path[dir_len] == '\0') {
+            break;
+        }
+
+        path += dir_len + 1;
+    }
+
+    if (permission_error == 1) {
+        return EACCES;
+    }
+
+    return ENOENT;
+}
+
 // выполняет простую команду в дочерном процессе
 static void run_simple_command(const Node *node, int previous_status) {
-    signal(SIGINT, SIG_DFL);
+    if (reset_child_signal() == 0) {
+        _exit(1);
+    }
 
     // перенаправления применяем после настройки каналов
     const Redirection *redirect = node->redirects;
@@ -70,26 +194,50 @@ static void run_simple_command(const Node *node, int previous_status) {
     } else if (strcmp(node->arg[0], "cd") == 0) {
         result = run_cd(node->arg);
     } else if (strcmp(node->arg[0], "pwd") == 0) {
-        result = run_pwd();
+        result = run_pwd(node->arg);
     } else if (strcmp(node->arg[0], "echo") == 0) {
         result = run_echo(node->arg);
     } else if (strcmp(node->arg[0], "help") == 0) {
         result = run_help();
     } else {
-        // внешняя программа заменяет программу ребенка
-        execvp(node->arg[0], node->arg);
+        // при успехе программа заменяет ребенка а при ошибке получаем ее номер
+        int saved_errno = exec_program(node->arg);
         
-        // это только при ошибке запуска
         result = 126;
-        if (errno == ENOENT) {
+        if (saved_errno == ENOENT) {
             result = 127;
         }
 
-        perror("mysh");
+        fprintf(stderr, "mysh: %s: %s\n", node->arg[0], strerror(saved_errno));
         _exit(result);
     }
 
     // перед _exit выводим оставшуюся часть встроенной команды
+    if (fflush(stdout) == EOF) {
+        perror("mysh: fflush");
+        result = 1;
+    }
+
+    _exit(result);
+}
+
+static void run_subshell_command(const Node *node, int previous_status) {
+    if (reset_child_signal() == 0) {
+        _exit(1);
+    }
+
+    const Redirection *redirect = node->redirects;
+    while(redirect != NULL) {
+        if (set_redirect(redirect->type, redirect->file_name) == 0) {
+            _exit(1);
+        }
+
+        redirect = redirect->next;
+    }
+
+    int end_shell = 0;
+    int result = run_tree(node->left, previous_status, &end_shell);
+
     if (fflush(stdout) == EOF) {
         perror("mysh: fflush");
         result = 1;
@@ -172,38 +320,46 @@ int run_pipe_node(const Node *tree, int previous_status) {
             perror("mysh: fork");
             // ребенка не создали - новый канал теперь не нужен
             if (have_next == 1) {
-                close(pipefd[0]);
-                close(pipefd[1]);
+                close_fd(pipefd[0]);
+                close_fd(pipefd[1]);
             }
             failed = 1;
             break;
         // настраиваем ввод и вывод в ребенке
         } else if (pid == 0) {
             // если есть предыдущая команда, то делаем ввод от предыдущей команды
-            if (prev_read != -1 && dup2(prev_read, STDIN_FILENO) == -1) {
+            if (prev_read != -1 && copy_fd(prev_read, STDIN_FILENO) == -1) {
                 perror("mysh: dup2");
                 _exit(1);
             }         
 
             // если есть следующая команда, то делаем вывод в новый канал
-            if (have_next == 1 && dup2(pipefd[1], STDOUT_FILENO) == -1) {
+            if (have_next == 1 && copy_fd(pipefd[1], STDOUT_FILENO) == -1) {
                 perror("mysh: dup2");
                 _exit(1);
             }
 
             // после dup2 старый номер чтения ребенку больше не нужен
             if (prev_read != -1) {
-                close(prev_read);
+                if (close_fd(prev_read) == 0) {
+                    _exit(1);
+                }
             }
 
             // закрываем неиспользуемые номера нового канала
             if (have_next == 1) {
-                close(pipefd[0]);
-                close(pipefd[1]);
+                if (close_fd(pipefd[0]) == 0 || close_fd(pipefd[1]) == 0) {
+                    _exit(1);
+                }
             }
 
             // выполняет одну команду
-            run_simple_command(commands[command], previous_status);
+            if (commands[command]->type == NODE_SUBSHELL) {
+                run_subshell_command(commands[command], previous_status);
+            } else {
+                run_simple_command(commands[command], previous_status);
+            }
+
             _exit(1);
         }
 
@@ -213,12 +369,16 @@ int run_pipe_node(const Node *tree, int previous_status) {
 
         // родителю не нужен предыдущий канал чтения
         if (prev_read != -1) {
-            close(prev_read);
+            if (close_fd(prev_read) == 0) {
+                failed = 1;
+            }
         }
 
         // родитель закрывает новый канал для записи 
         if (have_next == 1) {
-            close(pipefd[1]);
+            if (close_fd(pipefd[1]) == 0) {
+                failed = 1;
+            }
             prev_read = pipefd[0];
         } else { // нового канала больше нет
             prev_read = -1;
@@ -289,14 +449,14 @@ int run_my_command_node(const Node *node, int previous_status, int *end_shell) {
         return 1;
     }
 
-    int saved_input = dup(STDIN_FILENO);
+    int saved_input = save_fd(STDIN_FILENO);
     if (saved_input == -1) {
         perror("mysh: dup");
         return 1;
     }
 
     // сохраняем stdout чтобы вернуть его после перенаправления
-    int saved_output = dup(STDOUT_FILENO);
+    int saved_output = save_fd(STDOUT_FILENO);
     if (saved_output == -1) {
         perror("mysh: dup");
 
@@ -325,7 +485,7 @@ int run_my_command_node(const Node *node, int previous_status, int *end_shell) {
         if (strcmp(node->arg[0], "cd") == 0) {
             result = run_cd(node->arg);
         } else if (strcmp(node->arg[0], "pwd") == 0) {
-            result = run_pwd();
+            result = run_pwd(node->arg);
         } else if (strcmp(node->arg[0], "echo") == 0) {
             result = run_echo(node->arg);
         } else if (strcmp(node->arg[0], "help") == 0) {
@@ -346,15 +506,18 @@ int run_my_command_node(const Node *node, int previous_status, int *end_shell) {
     }
 
     // возвращаем оболочке прежние ввод и вывод
-    if (dup2(saved_input, STDIN_FILENO) == -1) {
+    if (copy_fd(saved_input, STDIN_FILENO) == -1) {
         perror("mysh: dup2");
         result = 1;
     }
 
-    if (dup2(saved_output, STDOUT_FILENO) == -1) {
+    if (copy_fd(saved_output, STDOUT_FILENO) == -1) {
         perror("mysh: dup2");
         result = 1;
     }
+
+    // сбрасываем возможный флаг ошибки после возврата stdout
+    clearerr(stdout);
 
     // закрываем дополнительные дескрипторы после восстановления
     if (close(saved_input) == -1) {
@@ -370,10 +533,36 @@ int run_my_command_node(const Node *node, int previous_status, int *end_shell) {
     return result;
 }
 
+// ждет завершения дочернего процесса и возвращает код его выхода
+static int wait_child_status(pid_t pid) {
+    int status;
+    pid_t result = waitpid(pid, &status, 0);
+
+    // если сигнал прервал ожидание то ждем еще раз
+    while (result == -1 && errno == EINTR) {
+        result = waitpid(pid, &status, 0);
+    }
+
+    if (result == -1) {
+        perror("mysh: waitpid");
+        return 1;
+    }
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+
+    return 1;
+}
+
 // запускает отдельную программу по данным из узла дерева
 int run_simple_node(const Node *node) {
     if (fflush(stdout) == EOF) {
-        perror("mysh: runner");
+        perror("mysh: fflush");
         return 1;
     }
 
@@ -384,29 +573,81 @@ int run_simple_node(const Node *node) {
     } else if (pid == 0) {
         run_simple_command(node, 0);
     } else {
-        int status;
-        pid_t result = waitpid(pid, &status, 0);
-
-        // если сигнал прервал ожидаение - ждем еще раз ребенка
-        while (result == -1 && errno == EINTR) {
-            result = waitpid(pid, &status, 0);
-        }
-
-        if (result == -1) {
-            perror("mysh: waitpid");
-            return 1;
-        }
-
-        if (WIFEXITED(status)) {
-            return WEXITSTATUS(status);
-        }
-
-        if (WIFSIGNALED(status)) {
-            return 128 + WTERMSIG(status);
-        }
-
-        return 1;
+        return wait_child_status(pid);
     }
 
     return 0;
+}
+
+// создает отдельный процесс для команды в скобках
+static int run_subshell_node(const Node *node, int previous_result) {
+    if (fflush(stdout) == EOF) {
+        perror("mysh: fflush");
+        return 1;
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("mysh: fork");
+        return 1;
+    } else if (pid == 0) {
+        run_subshell_command(node, previous_result);
+    }
+     
+    return wait_child_status(pid);
+}
+
+// выполняет узел дерева и возвращает код последней команды
+int run_tree(const Node *node, int previous_result, int *end_shell) {
+    if (node == NULL || *end_shell == 1) {
+        return previous_result;
+    }
+    
+    switch (node->type) {
+        case NODE_SIMPLE:
+            if (strcmp(node->arg[0], "cd") == 0 ||
+            strcmp(node->arg[0], "pwd") == 0 ||
+            strcmp(node->arg[0], "echo") == 0 ||
+            strcmp(node->arg[0], "help") == 0 ||
+            strcmp(node->arg[0], "exit") == 0) {
+                return run_my_command_node(node, previous_result, end_shell);
+            }
+
+            return run_simple_node(node);
+
+        case NODE_SUBSHELL:
+            return run_subshell_node(node, previous_result);
+        
+        case NODE_PIPE:
+            return run_pipe_node(node, previous_result);
+        
+        case NODE_AND:
+        case NODE_OR:
+        case NODE_SEQUENCE: {
+            // сначал левую часть выполняем
+            int status = run_tree(node->left, previous_result, end_shell);
+            
+            // после exit остальные команды не запускаем
+            if (*end_shell == 1) {
+                return status;
+            }
+
+            // для && правая часть только после успеха
+            if (node->type == NODE_AND && status != 0) {
+                return status;
+            }
+            
+            // для || правая часть только после ошибки
+            if (node->type == NODE_OR && status == 0) {
+                return status;
+            }
+
+            // для ; правая часть независимо от левой
+            return run_tree(node->right, status, end_shell);
+        }
+
+        default:
+            fprintf(stderr, "mysh: not ready\n");
+            return 2;
+    }
 }
