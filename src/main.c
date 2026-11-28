@@ -9,6 +9,7 @@
 #include "commands.h"
 #include "input.h"
 #include "parser.h"
+#include "jobs.h"
 
 // проверяет умеет ли runner выполнить все дерево 
 static int is_not_working(const Node *node) {
@@ -32,6 +33,34 @@ static int is_not_working(const Node *node) {
     return 0;
 }
 
+// настраивает группу процессов и сигнали для интерактивной оболочки
+static int init_terminal(void) {
+    // оболочка ингорирует сигналы терминала
+    if (signal(SIGINT, SIG_IGN) == SIG_ERR ||
+    signal(SIGQUIT, SIG_IGN) == SIG_ERR ||
+    signal(SIGTSTP, SIG_IGN) == SIG_ERR ||
+    signal(SIGTTIN, SIG_IGN) == SIG_ERR ||
+    signal(SIGTTOU, SIG_IGN) == SIG_ERR) {
+        perror("mysh: signal");
+        return 0;
+    }
+
+    // переводим оболочку в свою группу процессов
+    pid_t shell_pgid = getpid();
+    if (getpgrp() != shell_pgid && setpgid(shell_pgid, shell_pgid) == -1) {
+        perror("mysh: setpgid");
+        return 0;
+    }
+
+    // переводим группу оболочки на передний план терминала
+    if (tcsetpgrp(STDIN_FILENO, shell_pgid) == -1) {
+        perror("mysh: tcsetpgrp");
+        return 0;
+    }
+
+    return 1;
+}
+
 // argc — количество аргументов запуска вместе с именем программы
 // argv — строки с аргументами запуска
 int main(int argc, char **argv) {
@@ -49,13 +78,7 @@ int main(int argc, char **argv) {
     } else if (argc != 1) {
         fprintf(stderr, "mysh: usage: myshell '-c command | --dump-ast | --dump-tokens'\n");
         return 2;
-    } 
-
-    if (signal(SIGINT, SIG_IGN) == SIG_ERR ||
-        signal(SIGQUIT, SIG_IGN) == SIG_ERR) {
-            perror("mysh: signal");
-            return 1;
-        }
+    }
 
     // запоминаем код завершения помледней команды
     int last_status = 0;
@@ -67,6 +90,18 @@ int main(int argc, char **argv) {
     if (dump_ast == 1 || dump_tokens == 1 || command_text != NULL) {
         interactive = 0;
     }
+
+    if (interactive == 1) {
+        if (init_terminal() == 0) {
+            return 1;
+        } 
+    } else if (signal(SIGINT, SIG_IGN) == SIG_ERR ||
+        signal(SIGQUIT, SIG_IGN) == SIG_ERR) {
+        perror("mysh: signal");
+        return 1;
+    }
+
+    init_jobs();
 
     while (1) {
 
@@ -170,14 +205,17 @@ int main(int argc, char **argv) {
         
         // выполняем дерево
         int end_shell = 0;
-        last_status = run_tree(tree, last_status, &end_shell);
+        last_status = run_tree(tree, last_status, &end_shell, interactive);
 
         free_tree(tree);
         free_tokens(tokens);
 
         if (end_shell == 1) {
+            free_jobs();
             return last_status;
         }
     }
+
+    free_jobs();
     return last_status;
 }

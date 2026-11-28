@@ -8,6 +8,7 @@
 #include <signal.h>
 #include "runner.h"
 #include "commands.h"
+#include "jobs.h"
 
 // закрывает дескриптор и сообщает об ошибке
 static int close_fd(int fd) {
@@ -23,7 +24,10 @@ static int close_fd(int fd) {
 static int reset_child_signal(void) {
     if (signal(SIGINT, SIG_DFL) == SIG_ERR ||
     signal(SIGQUIT, SIG_DFL) == SIG_ERR ||
-    signal(SIGPIPE, SIG_DFL) == SIG_ERR) {
+    signal(SIGPIPE, SIG_DFL) == SIG_ERR ||
+    signal(SIGTSTP, SIG_DFL) == SIG_ERR ||
+    signal(SIGTTIN, SIG_DFL) == SIG_ERR ||
+    signal(SIGTTOU, SIG_DFL) == SIG_ERR) {
         perror("mysh: signal");
         return 0;
     }
@@ -236,7 +240,8 @@ static void run_subshell_command(const Node *node, int previous_status) {
     }
 
     int end_shell = 0;
-    int result = run_tree(node->left, previous_status, &end_shell);
+    // внутри подоболочки управление терминалом отключено
+    int result = run_tree(node->left, previous_status, &end_shell, 0);
 
     if (fflush(stdout) == EOF) {
         perror("mysh: fflush");
@@ -247,7 +252,7 @@ static void run_subshell_command(const Node *node, int previous_status) {
 }
 
 // запускает все команды конвейера по данным из дерева
-int run_pipe_node(const Node *tree, int previous_status) {
+int run_pipe_node(const Node *tree, int previous_status, int interactive) {
     if (fflush(stdout) == EOF) {
         perror("mysh: fflush");
         return 1;
@@ -289,6 +294,7 @@ int run_pipe_node(const Node *tree, int previous_status) {
     }
 
     int prev_read = -1;
+    pid_t pgid = 0; // общая группа процессов для всего конвейера
     int started = 0; // сколько детей успешно создалось
     int failed = 0; // была ли ошибка запуска или ожидания
 
@@ -327,6 +333,11 @@ int run_pipe_node(const Node *tree, int previous_status) {
             break;
         // настраиваем ввод и вывод в ребенке
         } else if (pid == 0) {
+            // в интерактивном режиме переводим процесс в группу конвейера
+            if (interactive == 1 && setpgid(0, pgid) == -1) {
+                perror("mysh: setpgid");
+                _exit(1);
+            }
             // если есть предыдущая команда, то делаем ввод от предыдущей команды
             if (prev_read != -1 && copy_fd(prev_read, STDIN_FILENO) == -1) {
                 perror("mysh: dup2");
@@ -367,6 +378,19 @@ int run_pipe_node(const Node *tree, int previous_status) {
         pids[started] = pid;
         started++;
 
+        if (interactive == 1) {
+            // первый процесс задает номер группы всего конвейера
+            if (pgid == 0) {
+                pgid = pid;
+            }
+            if (setpgid(pid, pgid) == -1 && errno != EACCES && errno != ESRCH) {
+                perror("mysh: setpgid");
+            }
+            if (command == 0 && tcsetpgrp(STDIN_FILENO, pgid) == -1) {
+                perror("mysh: tcsetpgrp");
+            }
+        }
+
         // родителю не нужен предыдущий канал чтения
         if (prev_read != -1) {
             if (close_fd(prev_read) == 0) {
@@ -385,7 +409,7 @@ int run_pipe_node(const Node *tree, int previous_status) {
         }
     }
 
-    // если запуск 
+    // закрываем оставшийся конец чтения после цикла
     if (prev_read != -1) {
         // получилось ли закрыть предыдущий канал
         if (close(prev_read) == -1) {
@@ -394,8 +418,13 @@ int run_pipe_node(const Node *tree, int previous_status) {
         }
     }
 
-    // результат последней команды
-    int last_status = 0;
+    int last_status = 0; // результат последней команды
+    int stopped = 0;
+    int stop_sig = 0;
+    int options = 0;
+    if (interactive == 1) {
+        options = WUNTRACED;
+    }
     
     // ждем результатов детей которых уде запустили
     for (int i = 0; i < started; i++) {
@@ -403,21 +432,42 @@ int run_pipe_node(const Node *tree, int previous_status) {
         pid_t result;
 
         // первый раз ждем этого ребенка
-        result = waitpid(pids[i], &status, 0);
+        result = waitpid(pids[i], &status, options);
         // если ожидание прервал сигнал - повторяем вызов
         while (result == -1 && errno == EINTR) {
-            result = waitpid(pids[i], &status, 0);
+            result = waitpid(pids[i], &status, options);
         }
 
         if (result == -1) {
             perror("mysh: waitpid");
             failed = 1;
+        } else if (WIFSTOPPED(status)) {
+            stopped = 1;
+            stop_sig = WSTOPSIG(status);
         } else if (i == started - 1) { // сохраняем статус последней команды
             last_status = status;
         }
     }
 
-    // массив ids больше не нужен
+    if (interactive == 1 && tcsetpgrp(STDIN_FILENO, getpgrp()) == -1) {
+        perror("mysh: tcsetpgrp");
+    }
+
+    if (failed == 0 && stopped == 1) {
+        int job_id = add_job(pgid, pids, started, JOB_STOPPED, "pipe");
+        
+        if (job_id != -1) {
+            printf("\n[%d]+  Stopped              pipe\n", job_id);
+            fflush(stdout);
+        }
+
+        free(pids);
+        free(commands);
+
+        return 128 + stop_sig;
+    }
+
+    // массив pids больше не нужен
     free(pids);
     free(commands);
 
@@ -533,14 +583,25 @@ int run_my_command_node(const Node *node, int previous_status, int *end_shell) {
     return result;
 }
 
-// ждет завершения дочернего процесса и возвращает код его выхода
-static int wait_child_status(pid_t pid) {
+// ждет завершения или остановки дочернего процесса и возвращает код его выхода
+static int wait_child_status(pid_t pid, int interactive, const char *command) {
+    int options = 0;
+    if (interactive == 1) {
+        // WUNTRACED ловит остановку по ctrl+z
+        options = WUNTRACED;
+    }
+    
     int status;
-    pid_t result = waitpid(pid, &status, 0);
+    pid_t result = waitpid(pid, &status, options);
 
     // если сигнал прервал ожидание то ждем еще раз
     while (result == -1 && errno == EINTR) {
-        result = waitpid(pid, &status, 0);
+        result = waitpid(pid, &status, options);
+    }
+
+    // возвращаемс терминал оболочке после работы команды
+    if (interactive == 1 && tcsetpgrp(STDIN_FILENO, getpgrp()) == -1) {
+        perror("mysh: tcsetpgrp");
     }
 
     if (result == -1) {
@@ -556,11 +617,20 @@ static int wait_child_status(pid_t pid) {
         return 128 + WTERMSIG(status);
     }
 
+    if (WIFSTOPPED(status)) {
+        int job_id = add_job(pid, &pid, 1, JOB_STOPPED, command);
+        if (job_id != -1) {
+            printf("\n[%d]+ Stopped              %s\n", job_id, command);
+            fflush(stdout);
+        }
+        return 128 + WSTOPSIG(status);
+    }
+    
     return 1;
 }
 
 // запускает отдельную программу по данным из узла дерева
-int run_simple_node(const Node *node) {
+int run_simple_node(const Node *node, int interactive) {
     if (fflush(stdout) == EOF) {
         perror("mysh: fflush");
         return 1;
@@ -571,16 +641,28 @@ int run_simple_node(const Node *node) {
         perror("mysh: fork");
         return 1;
     } else if (pid == 0) {
+        if (interactive == 1 && setpgid(0,0) == -1) {
+            perror("mysh: setpgid");
+            _exit(1);
+        }
+
         run_simple_command(node, 0);
-    } else {
-        return wait_child_status(pid);
     }
 
-    return 0;
+    if (interactive == 1) {
+        if (setpgid(pid, pid) == -1 && errno != EACCES && errno != ESRCH) {
+            perror("mysh: setpgid");
+        }
+        if (tcsetpgrp(STDIN_FILENO, pid) == -1) {
+            perror("mysh: tcsetpgrp");
+        }
+    }
+
+    return wait_child_status(pid, interactive, node->arg[0]);
 }
 
 // создает отдельный процесс для команды в скобках
-static int run_subshell_node(const Node *node, int previous_result) {
+static int run_subshell_node(const Node *node, int previous_result, int interactive) {
     if (fflush(stdout) == EOF) {
         perror("mysh: fflush");
         return 1;
@@ -591,14 +673,30 @@ static int run_subshell_node(const Node *node, int previous_result) {
         perror("mysh: fork");
         return 1;
     } else if (pid == 0) {
+        // переводим подоболочку в отдельную группу процессов
+        if (interactive == 1 && setpgid(0, 0) == -1) {
+            perror("mysh: setpgid");
+            _exit(1);
+        }
+
         run_subshell_command(node, previous_result);
     }
+
+    if (interactive == 1) {
+        // группу ставим и в родителе а терминал отдаем подоболочке
+        if (setpgid(pid, pid) == -1 && errno != EACCES && errno != ESRCH) {
+            perror("mysh: setpgid");
+        }
+        if (tcsetpgrp(STDIN_FILENO, pid) == -1) {
+            perror("mysh: tcsetpgrp");
+        }
+    }
      
-    return wait_child_status(pid);
+    return wait_child_status(pid, interactive, "(subshell)");
 }
 
 // выполняет узел дерева и возвращает код последней команды
-int run_tree(const Node *node, int previous_result, int *end_shell) {
+int run_tree(const Node *node, int previous_result, int *end_shell, int interactive) {
     if (node == NULL || *end_shell == 1) {
         return previous_result;
     }
@@ -613,19 +711,19 @@ int run_tree(const Node *node, int previous_result, int *end_shell) {
                 return run_my_command_node(node, previous_result, end_shell);
             }
 
-            return run_simple_node(node);
+            return run_simple_node(node, interactive);
 
         case NODE_SUBSHELL:
-            return run_subshell_node(node, previous_result);
+            return run_subshell_node(node, previous_result, interactive);
         
         case NODE_PIPE:
-            return run_pipe_node(node, previous_result);
+            return run_pipe_node(node, previous_result, interactive);
         
         case NODE_AND:
         case NODE_OR:
         case NODE_SEQUENCE: {
             // сначал левую часть выполняем
-            int status = run_tree(node->left, previous_result, end_shell);
+            int status = run_tree(node->left, previous_result, end_shell, interactive);
             
             // после exit остальные команды не запускаем
             if (*end_shell == 1) {
@@ -643,7 +741,7 @@ int run_tree(const Node *node, int previous_result, int *end_shell) {
             }
 
             // для ; правая часть независимо от левой
-            return run_tree(node->right, status, end_shell);
+            return run_tree(node->right, status, end_shell, interactive);
         }
 
         default:

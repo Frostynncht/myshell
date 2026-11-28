@@ -44,7 +44,7 @@ LineState get_line_state(const char *line) {
             quote = *ptr;
             word_start = 0; // слово началось 
         } else if (*ptr == ' ' || *ptr == '\t' || 
-        strchr("|&;()<>", *ptr) != NULL) { // 
+        strchr("|&;()<>", *ptr) != NULL) {
             word_start = 1; // слово может начаться
         } else { // обычные символы
             word_start = 0; // слово началось
